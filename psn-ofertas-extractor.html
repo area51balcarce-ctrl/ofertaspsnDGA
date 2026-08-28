@@ -91,7 +91,7 @@
   <div class="controls">
     <div><label>Página inicial</label><input id="desde" type="number" min="1" max="150" value="1"></div>
     <div><label>Página final</label><input id="hasta" type="number" min="1" max="150" value="150"></div>
-    <div><label>Productos por página</label><input id="size" type="number" min="1" max="48" value="24"></div>
+    <div><label>Productos por página</label><input id="size" type="number" min="1" max="24" value="24"></div>
     <div><label>Pausa entre páginas (ms)</label><input id="delay" type="number" min="0" max="5000" value="180"></div>
   </div>
 
@@ -166,7 +166,7 @@ function appendRow(r) {
 }
 
 async function fetchPage(page, size) {
-  const res = await fetch(`/api/psn-ofertas?page=${encodeURIComponent(page)}&size=${encodeURIComponent(size)}`, {
+  const res = await fetch(`/api/psn-ofertas-api?page=${encodeURIComponent(page)}&size=${encodeURIComponent(size)}`, {
     cache: 'no-store'
   });
   const data = await res.json();
@@ -177,7 +177,7 @@ async function fetchPage(page, size) {
 async function extraer() {
   const desde = Math.max(1, parseInt($('desde').value || '1', 10));
   const hasta = Math.min(150, parseInt($('hasta').value || '150', 10));
-  const size = Math.min(48, Math.max(1, parseInt($('size').value || '24', 10)));
+  const size = Math.min(24, Math.max(1, parseInt($('size').value || '24', 10)));
   const delay = Math.max(0, parseInt($('delay').value || '180', 10));
 
   if (hasta < desde) return setStatus('La página final no puede ser menor que la inicial.', 'warn');
