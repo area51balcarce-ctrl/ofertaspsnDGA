@@ -1,6 +1,7 @@
 // api/psn-ofertas-api.js
 // AREA 51 - Extractor independiente de ofertas PS Store Argentina.
 // Proyecto exclusivo: ofertaspsnDGA.
+// Corrección CSRF/Apollo aplicada sin modificar el HTML.
 
 const PSN_GRAPHQL = 'https://web.np.playstation.com/api/graphql/v1//op';
 const CATEGORY_ID = '3f772501-f6f8-49b7-abac-874a88ca4897';
@@ -77,11 +78,16 @@ async function requestPage(page, size) {
     headers: {
       'Accept': 'application/json, text/plain, */*',
       'Accept-Language': 'es-AR,es;q=0.9',
+      'Content-Type': 'application/json',
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
       'Origin': 'https://store.playstation.com',
       'Referer': 'https://store.playstation.com/',
-      'x-psn-store-locale': LOCALE
+      'x-psn-store-locale': LOCALE,
+
+      // Cabeceras requeridas por Apollo CSRF prevention.
+      'x-apollo-operation-name': 'categoryGridRetrieve',
+      'apollo-require-preflight': 'true'
     }
   });
 
@@ -91,7 +97,9 @@ async function requestPage(page, size) {
   try {
     json = JSON.parse(raw);
   } catch {
-    throw new Error(`PlayStation devolvió una respuesta no JSON. HTTP ${response.status}.`);
+    throw new Error(
+      `PlayStation devolvió una respuesta no JSON. HTTP ${response.status}.`
+    );
   }
 
   if (!response.ok) {
@@ -99,12 +107,15 @@ async function requestPage(page, size) {
       json?.errors?.[0]?.message ||
       json?.message ||
       `HTTP ${response.status}`;
+
     throw new Error(`PlayStation rechazó la consulta: ${apiMessage}`);
   }
 
   if (json?.errors?.length) {
     throw new Error(
-      `PlayStation GraphQL: ${json.errors.map((e) => e?.message || 'Error').join(' | ')}`
+      `PlayStation GraphQL: ${json.errors
+        .map((e) => e?.message || 'Error')
+        .join(' | ')}`
     );
   }
 
@@ -123,7 +134,10 @@ export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 
   if (req.method !== 'GET') {
-    return res.status(405).json({ ok: false, error: 'Method not allowed' });
+    return res.status(405).json({
+      ok: false,
+      error: 'Method not allowed'
+    });
   }
 
   const page = Math.max(
