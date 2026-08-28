@@ -1,7 +1,8 @@
 // api/psn-ofertas-api.js
 // AREA 51 - Extractor independiente de ofertas PS Store Argentina.
 // Proyecto exclusivo: ofertaspsnDGA.
-// Corrección CSRF/Apollo aplicada sin modificar el HTML.
+// Se conserva intacta la consulta a PlayStation que ya funciona.
+// Esta versión AGREGA una capa comercial después de normalizar los productos.
 
 const PSN_GRAPHQL = 'https://web.np.playstation.com/api/graphql/v1//op';
 const CATEGORY_ID = '3f772501-f6f8-49b7-abac-874a88ca4897';
@@ -18,9 +19,94 @@ const FILTERS = [
   'storeDisplayClassification:OTHER'
 ];
 
+// -----------------------------------------------------------------------------
+// CAPA COMERCIAL - NUEVA
+// -----------------------------------------------------------------------------
+
+const EXCLUDED_TYPES = [
+  'VIRTUAL_CURRENCY',
+  'ADD_ON_PACK',
+  'SEASON_PASS',
+  'ITEM',
+  'CHARACTER',
+  'LEVEL',
+  'OTHER',
+  'COSTUME',
+  'VEHICLE',
+  'MAP',
+  'EPISODE',
+  'WEAPONS',
+  'TICKET',
+  'TRACK'
+];
+
+const EXCLUDED_NAME_TERMS = [
+  'DLC',
+  'Add-on',
+  'Season Pass',
+  'Expansion',
+  'Expansion Pass',
+  'Content Pack',
+  'Character Pack',
+  'Costume Pack',
+  'Skin Pack',
+  'Weapon Pack',
+  'Map Pack',
+  'Currency',
+  'Coins',
+  'Points',
+  'Credits',
+  'In-game currency'
+];
+
+const excludedGames = [
+  '0 Degrees',
+  '15in1 Solitaire',
+  'Super Puzzles Dream',
+  'Kittengumi: The Sakuran Chronicles - Chapter 0',
+  'Garten of Banban 0',
+  'Arcade Archives',
+  'Rock Band',
+  'Primal Carnage: Extinction',
+  'Audica',
+  '112th Seed',
+  '10-Second Ghost',
+  '11-11 Memories Retold',
+  '20th Century Beauties',
+  '2Dark',
+  '30 Sport Games in 1',
+  '34 Sports Games',
+  '30 Billiards',
+  '4PGP'
+];
+
+// VR conservador: NO se elimina por contener simplemente "VR" o "PS VR".
+// Solo se descarta si el nombre contiene una señal fuerte de exclusividad/requisito VR.
+const VR_EXCLUSIVE_TERMS = [
+  'VR Only',
+  'VR-Only',
+  'Virtual Reality Only',
+  'VR Experience',
+  'PS VR Required',
+  'PS VR2 Required',
+  'PSVR Required',
+  'PSVR2 Required',
+  'PlayStation VR Required',
+  'PlayStation VR2 Required'
+];
+
 function asText(value) {
   if (value === null || value === undefined) return '';
   return String(value);
+}
+
+function normalizeText(value) {
+  return asText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function buildVariables(page, size) {
@@ -58,6 +144,56 @@ function normalizeProduct(product, page) {
   };
 }
 
+function matchesNormalizedTerm(text, term) {
+  return normalizeText(text).includes(normalizeText(term));
+}
+
+function getCommercialExclusion(row) {
+  const type = asText(row.clasificacion).trim().toUpperCase();
+
+  if (EXCLUDED_TYPES.includes(type)) {
+    return {
+      motivoExclusion: 'TIPO_EXCLUIDO',
+      detalleExclusion: type
+    };
+  }
+
+  const extraTerm = EXCLUDED_NAME_TERMS.find((term) =>
+    matchesNormalizedTerm(row.nombre, term)
+  );
+
+  if (extraTerm) {
+    return {
+      motivoExclusion: 'CONTENIDO_EXTRA',
+      detalleExclusion: extraTerm
+    };
+  }
+
+  const vrTerm = VR_EXCLUSIVE_TERMS.find((term) =>
+    matchesNormalizedTerm(row.nombre, term)
+  );
+
+  if (vrTerm) {
+    return {
+      motivoExclusion: 'VR_EXCLUSIVO',
+      detalleExclusion: vrTerm
+    };
+  }
+
+  const blacklisted = excludedGames.find((game) =>
+    matchesNormalizedTerm(row.nombre, game)
+  );
+
+  if (blacklisted) {
+    return {
+      motivoExclusion: 'LISTA_NEGRA',
+      detalleExclusion: blacklisted
+    };
+  }
+
+  return null;
+}
+
 async function requestPage(page, size) {
   const variables = buildVariables(page, size);
 
@@ -84,8 +220,6 @@ async function requestPage(page, size) {
       'Origin': 'https://store.playstation.com',
       'Referer': 'https://store.playstation.com/',
       'x-psn-store-locale': LOCALE,
-
-      // Cabeceras requeridas por Apollo CSRF prevention.
       'x-apollo-operation-name': 'categoryGridRetrieve',
       'apollo-require-preflight': 'true'
     }
@@ -153,16 +287,43 @@ export default async function handler(req, res) {
   try {
     const grid = await requestPage(page, size);
     const products = Array.isArray(grid.products) ? grid.products : [];
-    const rows = products.map((p) => normalizeProduct(p, page));
+    const normalizedRows = products.map((p) => normalizeProduct(p, page));
+
+    const comerciales = [];
+    const descartados = [];
+
+    for (const row of normalizedRows) {
+      const exclusion = getCommercialExclusion(row);
+
+      if (exclusion) {
+        descartados.push({
+          ...row,
+          ...exclusion
+        });
+      } else {
+        comerciales.push(row);
+      }
+    }
+
+    const descartadosPorMotivo = descartados.reduce((acc, row) => {
+      const key = row.motivoExclusion || 'OTRO';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
 
     return res.status(200).json({
       ok: true,
       pagina: page,
-      cantidad: rows.length,
+      cantidadOriginal: normalizedRows.length,
+      cantidad: comerciales.length,
+      cantidadComercial: comerciales.length,
+      cantidadDescartados: descartados.length,
+      descartadosPorMotivo,
       pageInfo: grid.pageInfo || null,
       reportingName: grid.reportingName || '',
       queryHash: QUERY_HASH,
-      productos: rows
+      productos: comerciales,
+      descartados
     });
   } catch (error) {
     console.error('[AREA51 PSN extractor]', error);
