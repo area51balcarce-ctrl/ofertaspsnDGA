@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AREA 51 - Extractor PSN Argentina</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      background: radial-gradient(circle at top, #3d0059, #07010d 58%, #010103);
+      color: #fff;
+      padding: 24px;
+    }
+    .app {
+      max-width: 1150px;
+      margin: 0 auto;
+      background: rgba(9, 5, 16, .94);
+      border: 1px solid rgba(0, 230, 118, .28);
+      border-radius: 18px;
+      padding: 22px;
+      box-shadow: 0 0 32px rgba(0, 230, 118, .14);
+    }
+    .header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+    .header img { width:54px; height:54px; border-radius:50%; object-fit:cover; }
+    h1 { margin:0; font-size:22px; }
+    .sub { color:#bbb; font-size:13px; margin-top:4px; }
+    .controls {
+      display:grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap:10px;
+      margin:18px 0;
+    }
+    label { display:block; font-size:12px; color:#bbb; margin-bottom:5px; }
+    input {
+      width:100%;
+      border:1px solid #393047;
+      border-radius:9px;
+      background:#120b1c;
+      color:#fff;
+      padding:10px;
+    }
+    .actions { display:flex; flex-wrap:wrap; gap:9px; margin:12px 0 18px; }
+    button {
+      border:0;
+      border-radius:999px;
+      padding:10px 16px;
+      font-weight:700;
+      cursor:pointer;
+    }
+    .primary { background:linear-gradient(90deg,#00e676,#25d366); color:#051107; }
+    .secondary { background:#281d35; color:#fff; border:1px solid #4d3d61; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .status {
+      padding:12px;
+      border-radius:10px;
+      background:#120b1c;
+      border:1px solid #2d2239;
+      font-size:13px;
+      white-space:pre-wrap;
+    }
+    .progress-wrap { height:9px; background:#1d1625; border-radius:999px; overflow:hidden; margin:10px 0 16px; }
+    .progress { height:100%; width:0%; background:linear-gradient(90deg,#00e676,#7c4dff); transition:width .2s; }
+    .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:14px 0; }
+    .stat { background:#120b1c; border:1px solid #2d2239; border-radius:10px; padding:12px; }
+    .stat b { display:block; font-size:20px; margin-top:4px; }
+    .table-wrap { overflow:auto; max-height:520px; border:1px solid #2d2239; border-radius:10px; }
+    table { width:100%; border-collapse:collapse; min-width:1050px; background:#0d0814; }
+    th,td { padding:9px 10px; border-bottom:1px solid #211829; text-align:left; font-size:12px; }
+    th { position:sticky; top:0; background:#1b1126; z-index:1; }
+    a { color:#69f0ae; }
+    .warn { color:#ffd166; }
+    .ok { color:#69f0ae; }
+    @media (max-width:760px) {
+      body{padding:10px}.controls,.stats{grid-template-columns:1fr 1fr}
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <img src="https://i.imgur.com/qW3bMA7.jpeg" alt="AREA 51" />
+    <div>
+      <h1>AREA 51 - Extractor de ofertas PSN Argentina</h1>
+      <div class="sub">Juego completo + Paquete de juego + Edición premium + Complemento</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div><label>Página inicial</label><input id="desde" type="number" min="1" max="150" value="1"></div>
+    <div><label>Página final</label><input id="hasta" type="number" min="1" max="150" value="150"></div>
+    <div><label>Productos por página</label><input id="size" type="number" min="1" max="48" value="24"></div>
+    <div><label>Pausa entre páginas (ms)</label><input id="delay" type="number" min="0" max="5000" value="180"></div>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="btnExtraer">🚀 Analizar páginas</button>
+    <button class="secondary" id="btnExcel" disabled>📊 Descargar Excel</button>
+    <button class="secondary" id="btnCsv" disabled>📄 Descargar CSV</button>
+    <button class="secondary" id="btnLimpiar">🧹 Limpiar</button>
+  </div>
+
+  <div id="estado" class="status">Listo. No se modificó ningún sistema existente de AREA 51.</div>
+  <div class="progress-wrap"><div id="barra" class="progress"></div></div>
+
+  <div class="stats">
+    <div class="stat">Páginas procesadas<b id="sPaginas">0</b></div>
+    <div class="stat">Productos obtenidos<b id="sProductos">0</b></div>
+    <div class="stat">Con precio promo<b id="sPromo">0</b></div>
+    <div class="stat">Errores<b id="sErrores">0</b></div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Página</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
+        <th>Precio original</th><th>Precio promo</th><th>Descuento</th><th>URL directa</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- SheetJS corre en el navegador: no hace falta tocar package.json -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+const rows = [];
+let errores = 0;
+let cancelado = false;
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function setStatus(txt, clase='') {
+  $('estado').className = 'status ' + clase;
+  $('estado').textContent = txt;
+}
+
+function updateStats(paginas) {
+  $('sPaginas').textContent = paginas;
+  $('sProductos').textContent = rows.length;
+  $('sPromo').textContent = rows.filter(r => r.descuento || (r.precioPromo && r.precioPromo !== r.precioOriginal)).length;
+  $('sErrores').textContent = errores;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'
+  })[c]);
+}
+
+function appendRow(r) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${escapeHtml(r.pagina)}</td>
+    <td>${escapeHtml(r.nombre)}</td>
+    <td>${escapeHtml(r.plataformas)}</td>
+    <td>${escapeHtml(r.clasificacion)}</td>
+    <td>${escapeHtml(r.precioOriginal)}</td>
+    <td>${escapeHtml(r.precioPromo)}</td>
+    <td>${escapeHtml(r.descuento)}</td>
+    <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank">Abrir PSN</a>` : ''}</td>`;
+  $('tbody').appendChild(tr);
+}
+
+async function fetchPage(page, size) {
+  const res = await fetch(`/api/psn-ofertas?page=${encodeURIComponent(page)}&size=${encodeURIComponent(size)}`, {
+    cache: 'no-store'
+  });
+  const data = await res.json();
+  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function extraer() {
+  const desde = Math.max(1, parseInt($('desde').value || '1', 10));
+  const hasta = Math.min(150, parseInt($('hasta').value || '150', 10));
+  const size = Math.min(48, Math.max(1, parseInt($('size').value || '24', 10)));
+  const delay = Math.max(0, parseInt($('delay').value || '180', 10));
+
+  if (hasta < desde) return setStatus('La página final no puede ser menor que la inicial.', 'warn');
+
+  rows.length = 0;
+  errores = 0;
+  cancelado = false;
+  $('tbody').innerHTML = '';
+  $('btnExtraer').disabled = true;
+  $('btnExcel').disabled = true;
+  $('btnCsv').disabled = true;
+  $('barra').style.width = '0%';
+
+  const total = hasta - desde + 1;
+  let procesadas = 0;
+
+  for (let page = desde; page <= hasta; page++) {
+    if (cancelado) break;
+    setStatus(`Analizando página ${page} de ${hasta}...\nProductos acumulados: ${rows.length}`);
+
+    try {
+      const data = await fetchPage(page, size);
+      for (const r of (data.productos || [])) {
+        rows.push(r);
+        appendRow(r);
+      }
+    } catch (e) {
+      errores++;
+      console.error('Página', page, e);
+    }
+
+    procesadas++;
+    $('barra').style.width = `${Math.round((procesadas / total) * 100)}%`;
+    updateStats(procesadas);
+    if (delay && page < hasta) await sleep(delay);
+  }
+
+  $('btnExtraer').disabled = false;
+  $('btnExcel').disabled = rows.length === 0;
+  $('btnCsv').disabled = rows.length === 0;
+
+  if (rows.length) {
+    setStatus(`Extracción terminada. ${rows.length} productos obtenidos de ${procesadas} páginas. Errores: ${errores}.`, errores ? 'warn' : 'ok');
+  } else {
+    setStatus('No se obtuvieron productos. Revisá el error de la API antes de continuar.', 'warn');
+  }
+}
+
+function exportRows() {
+  return rows.map(r => ({
+    'Página': r.pagina,
+    'Nombre': r.nombre,
+    'Plataformas': r.plataformas,
+    'Clasificación': r.clasificacion,
+    'Precio original': r.precioOriginal,
+    'Precio promo': r.precioPromo,
+    'Descuento': r.descuento,
+    'URL directa PSN': r.urlDirecta
+  }));
+}
+
+function descargarExcel() {
+  if (!rows.length || typeof XLSX === 'undefined') return;
+  const ws = XLSX.utils.json_to_sheet(exportRows());
+  ws['!cols'] = [
+    {wch:8},{wch:55},{wch:18},{wch:20},{wch:16},{wch:16},{wch:12},{wch:75}
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Ofertas PSN AR');
+  XLSX.writeFile(wb, `AREA51_Ofertas_PSN_AR_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+function descargarCsv() {
+  if (!rows.length) return;
+  const headers = ['Página','Nombre','Plataformas','Clasificación','Precio original','Precio promo','Descuento','URL directa PSN'];
+  const lines = [headers, ...rows.map(r => [r.pagina,r.nombre,r.plataformas,r.clasificacion,r.precioOriginal,r.precioPromo,r.descuento,r.urlDirecta])]
+    .map(cols => cols.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','));
+  const blob = new Blob(['\ufeff' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `AREA51_Ofertas_PSN_AR_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+$('btnExtraer').addEventListener('click', extraer);
+$('btnExcel').addEventListener('click', descargarExcel);
+$('btnCsv').addEventListener('click', descargarCsv);
+$('btnLimpiar').addEventListener('click', () => {
+  cancelado = true;
+  rows.length = 0;
+  errores = 0;
+  $('tbody').innerHTML = '';
+  $('barra').style.width = '0%';
+  updateStats(0);
+  $('btnExcel').disabled = true;
+  $('btnCsv').disabled = true;
+  $('btnExtraer').disabled = false;
+  setStatus('Datos limpiados.');
+});
+</script>
+</body>
+</html>
