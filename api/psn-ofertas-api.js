@@ -1,24 +1,20 @@
-// api/psn-ofertas.js
+// api/psn-ofertas-api.js
 // AREA 51 - Extractor independiente de ofertas PS Store Argentina.
-// NO modifica ningún archivo existente del proyecto.
+// Proyecto exclusivo: ofertaspsnDGA.
 
-const PSN_GRAPHQL = 'https://web.np.playstation.com/api/graphql/v1/op';
+const PSN_GRAPHQL = 'https://web.np.playstation.com/api/graphql/v1//op';
 const CATEGORY_ID = '3f772501-f6f8-49b7-abac-874a88ca4897';
 const LOCALE = 'es-AR';
 const STORE_PREFIX = 'https://store.playstation.com/es-ar/product/';
 
-// Persisted-query hashes observados para categoryGridRetrieve.
-// Se prueban en orden para tolerar cambios de PlayStation.
-const QUERY_HASHES = [
-  '9845afc0dbaab4965f6563fffc703f588c8e76792000e8610843b8d3ee9c4c09',
-  '4ce7d410a4db2c8b635a48c1dcec375906ff63b19dadd87e073f8fd0c0481d35'
-];
+const QUERY_HASH =
+  '88c0b9a1273c6d320c51cd73e390924e21ae28bf09f01cde8b84b1034b16cd03';
 
-const CLASSIFICATIONS = [
-  'FULL_GAME',
-  'GAME_BUNDLE',
-  'PREMIUM_EDITION',
-  'OTHER'
+const FILTERS = [
+  'storeDisplayClassification:FULL_GAME',
+  'storeDisplayClassification:GAME_BUNDLE',
+  'storeDisplayClassification:PREMIUM_EDITION',
+  'storeDisplayClassification:OTHER'
 ];
 
 function asText(value) {
@@ -37,12 +33,7 @@ function buildVariables(page, size) {
       name: 'productName',
       isAscending: true
     },
-    filterBy: [
-      {
-        name: 'storeDisplayClassification',
-        values: CLASSIFICATIONS
-      }
-    ],
+    filterBy: FILTERS,
     facetOptions: []
   };
 }
@@ -69,49 +60,63 @@ function normalizeProduct(product, page) {
 async function requestPage(page, size) {
   const variables = buildVariables(page, size);
 
-  for (const hash of QUERY_HASHES) {
-    const extensions = {
-      persistedQuery: {
-        version: 1,
-        sha256Hash: hash
-      }
-    };
-
-    const url = new URL(PSN_GRAPHQL);
-    url.searchParams.set('operationName', 'categoryGridRetrieve');
-    url.searchParams.set('variables', JSON.stringify(variables));
-    url.searchParams.set('extensions', JSON.stringify(extensions));
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'es-AR,es;q=0.9',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-        'Origin': 'https://store.playstation.com',
-        'Referer': 'https://store.playstation.com/',
-        'x-psn-store-locale': LOCALE
-      }
-    });
-
-    const raw = await response.text();
-    let json;
-
-    try {
-      json = JSON.parse(raw);
-    } catch {
-      json = null;
+  const extensions = {
+    persistedQuery: {
+      version: 1,
+      sha256Hash: QUERY_HASH
     }
+  };
 
-    const grid = json?.data?.categoryGridRetrieve;
-    if (response.ok && grid && !json?.errors) {
-      return { grid, hash };
+  const url = new URL(PSN_GRAPHQL);
+  url.searchParams.set('operationName', 'categoryGridRetrieve');
+  url.searchParams.set('variables', JSON.stringify(variables));
+  url.searchParams.set('extensions', JSON.stringify(extensions));
+
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: {
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'es-AR,es;q=0.9',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+      'Origin': 'https://store.playstation.com',
+      'Referer': 'https://store.playstation.com/',
+      'x-psn-store-locale': LOCALE
     }
+  });
+
+  const raw = await response.text();
+  let json;
+
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new Error(`PlayStation devolvió una respuesta no JSON. HTTP ${response.status}.`);
   }
 
-  throw new Error(
-    'PlayStation no aceptó la consulta de catálogo. Puede haber cambiado el persisted-query hash.'
-  );
+  if (!response.ok) {
+    const apiMessage =
+      json?.errors?.[0]?.message ||
+      json?.message ||
+      `HTTP ${response.status}`;
+    throw new Error(`PlayStation rechazó la consulta: ${apiMessage}`);
+  }
+
+  if (json?.errors?.length) {
+    throw new Error(
+      `PlayStation GraphQL: ${json.errors.map((e) => e?.message || 'Error').join(' | ')}`
+    );
+  }
+
+  const grid = json?.data?.categoryGridRetrieve;
+
+  if (!grid) {
+    throw new Error(
+      'PlayStation respondió OK pero no devolvió data.categoryGridRetrieve.'
+    );
+  }
+
+  return grid;
 }
 
 export default async function handler(req, res) {
@@ -121,15 +126,20 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  const page = Math.max(1, Math.min(150, Number.parseInt(req.query.page || '1', 10)));
-  const size = Math.max(1, Math.min(48, Number.parseInt(req.query.size || '24', 10)));
+  const page = Math.max(
+    1,
+    Math.min(150, Number.parseInt(req.query.page || '1', 10))
+  );
+
+  const size = Math.max(
+    1,
+    Math.min(24, Number.parseInt(req.query.size || '24', 10))
+  );
 
   try {
-    const { grid, hash } = await requestPage(page, size);
+    const grid = await requestPage(page, size);
     const products = Array.isArray(grid.products) ? grid.products : [];
-    const rows = products
-      .filter((p) => CLASSIFICATIONS.includes(p?.storeDisplayClassification))
-      .map((p) => normalizeProduct(p, page));
+    const rows = products.map((p) => normalizeProduct(p, page));
 
     return res.status(200).json({
       ok: true,
@@ -137,15 +147,18 @@ export default async function handler(req, res) {
       cantidad: rows.length,
       pageInfo: grid.pageInfo || null,
       reportingName: grid.reportingName || '',
-      queryHash: hash,
+      queryHash: QUERY_HASH,
       productos: rows
     });
   } catch (error) {
     console.error('[AREA51 PSN extractor]', error);
+
     return res.status(500).json({
       ok: false,
       pagina: page,
-      error: error?.message || 'Error desconocido al consultar PlayStation Store'
+      error:
+        error?.message ||
+        'Error desconocido al consultar PlayStation Store'
     });
   }
 }
