@@ -15,7 +15,7 @@
       padding: 24px;
     }
     .app {
-      max-width: 1150px;
+      max-width: 1250px;
       margin: 0 auto;
       background: rgba(9, 5, 16, .94);
       border: 1px solid rgba(0, 230, 118, .28);
@@ -26,7 +26,9 @@
     .header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
     .header img { width:54px; height:54px; border-radius:50%; object-fit:cover; }
     h1 { margin:0; font-size:22px; }
+    h2 { margin:18px 0 10px; font-size:17px; }
     .sub { color:#bbb; font-size:13px; margin-top:4px; }
+    .muted { color:#aaa; font-size:12px; margin-top:5px; }
     .controls {
       display:grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -63,18 +65,26 @@
     }
     .progress-wrap { height:9px; background:#1d1625; border-radius:999px; overflow:hidden; margin:10px 0 16px; }
     .progress { height:100%; width:0%; background:linear-gradient(90deg,#00e676,#7c4dff); transition:width .2s; }
-    .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:14px 0; }
+    .stats {
+      display:grid;
+      grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));
+      gap:10px;
+      margin:14px 0;
+    }
     .stat { background:#120b1c; border:1px solid #2d2239; border-radius:10px; padding:12px; }
     .stat b { display:block; font-size:20px; margin-top:4px; }
     .table-wrap { overflow:auto; max-height:520px; border:1px solid #2d2239; border-radius:10px; }
-    table { width:100%; border-collapse:collapse; min-width:1050px; background:#0d0814; }
+    table { width:100%; border-collapse:collapse; min-width:1100px; background:#0d0814; }
     th,td { padding:9px 10px; border-bottom:1px solid #211829; text-align:left; font-size:12px; }
     th { position:sticky; top:0; background:#1b1126; z-index:1; }
     a { color:#69f0ae; }
     .warn { color:#ffd166; }
     .ok { color:#69f0ae; }
+    .hidden { display:none; }
+    .discarded-box { margin-top:18px; border-top:1px solid #2d2239; padding-top:4px; }
     @media (max-width:760px) {
-      body{padding:10px}.controls,.stats{grid-template-columns:1fr 1fr}
+      body { padding:10px; }
+      .controls { grid-template-columns:1fr 1fr; }
     }
   </style>
 </head>
@@ -85,6 +95,7 @@
     <div>
       <h1>AREA 51 - Extractor de ofertas PSN Argentina</h1>
       <div class="sub">Juego completo + Paquete de juego + Edición premium + Complemento</div>
+      <div class="muted">Nueva capa comercial: tipos excluidos + extras + lista negra + VR exclusivo conservador</div>
     </div>
   </div>
 
@@ -99,19 +110,27 @@
     <button class="primary" id="btnExtraer">🚀 Analizar páginas</button>
     <button class="secondary" id="btnExcel" disabled>📊 Descargar Excel</button>
     <button class="secondary" id="btnCsv" disabled>📄 Descargar CSV</button>
-    <button class="secondary" id="btnLimpiar">🧹 Limpiar</button>
+    <button class="secondary" id="btnDescartados" disabled>🧹 Ver descartados</button>
+    <button class="secondary" id="btnLimpiar">🧽 Limpiar</button>
   </div>
 
-  <div id="estado" class="status">Listo. No se modificó ningún sistema existente de AREA 51.</div>
+  <div id="estado" class="status">Listo. La consulta PSN original se mantiene y el filtro comercial se aplica después.</div>
   <div class="progress-wrap"><div id="barra" class="progress"></div></div>
 
   <div class="stats">
     <div class="stat">Páginas procesadas<b id="sPaginas">0</b></div>
-    <div class="stat">Productos obtenidos<b id="sProductos">0</b></div>
+    <div class="stat">Leídos desde PSN<b id="sLeidos">0</b></div>
+    <div class="stat">Productos comerciales<b id="sProductos">0</b></div>
     <div class="stat">Con precio promo<b id="sPromo">0</b></div>
+    <div class="stat">Descartados totales<b id="sDescartados">0</b></div>
+    <div class="stat">Por tipo<b id="sTipo">0</b></div>
+    <div class="stat">Por contenido extra<b id="sExtra">0</b></div>
+    <div class="stat">Lista negra<b id="sLista">0</b></div>
+    <div class="stat">VR exclusivo<b id="sVr">0</b></div>
     <div class="stat">Errores<b id="sErrores">0</b></div>
   </div>
 
+  <h2>Ofertas comerciales</h2>
   <div class="table-wrap">
     <table>
       <thead><tr>
@@ -121,14 +140,38 @@
       <tbody id="tbody"></tbody>
     </table>
   </div>
+
+  <div id="descartadosBox" class="discarded-box hidden">
+    <h2>Productos descartados</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Página</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
+          <th>Precio promo</th><th>Motivo</th><th>Detalle</th><th>URL directa</th>
+        </tr></thead>
+        <tbody id="tbodyDescartados"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <!-- SheetJS corre en el navegador: no hace falta tocar package.json -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script>
 const rows = [];
+const descartados = [];
+
 let errores = 0;
 let cancelado = false;
+let leidosPSN = 0;
+let paginasProcesadas = 0;
+
+const motivos = {
+  TIPO_EXCLUIDO: 0,
+  CONTENIDO_EXTRA: 0,
+  LISTA_NEGRA: 0,
+  VR_EXCLUSIVO: 0
+};
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -138,10 +181,23 @@ function setStatus(txt, clase='') {
   $('estado').textContent = txt;
 }
 
-function updateStats(paginas) {
-  $('sPaginas').textContent = paginas;
+function contarPromo() {
+  return rows.filter(r =>
+    r.descuento ||
+    (r.precioPromo && r.precioPromo !== r.precioOriginal)
+  ).length;
+}
+
+function updateStats() {
+  $('sPaginas').textContent = paginasProcesadas;
+  $('sLeidos').textContent = leidosPSN;
   $('sProductos').textContent = rows.length;
-  $('sPromo').textContent = rows.filter(r => r.descuento || (r.precioPromo && r.precioPromo !== r.precioOriginal)).length;
+  $('sPromo').textContent = contarPromo();
+  $('sDescartados').textContent = descartados.length;
+  $('sTipo').textContent = motivos.TIPO_EXCLUIDO;
+  $('sExtra').textContent = motivos.CONTENIDO_EXTRA;
+  $('sLista').textContent = motivos.LISTA_NEGRA;
+  $('sVr').textContent = motivos.VR_EXCLUSIVO;
   $('sErrores').textContent = errores;
 }
 
@@ -161,8 +217,22 @@ function appendRow(r) {
     <td>${escapeHtml(r.precioOriginal)}</td>
     <td>${escapeHtml(r.precioPromo)}</td>
     <td>${escapeHtml(r.descuento)}</td>
-    <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank">Abrir PSN</a>` : ''}</td>`;
+    <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank" rel="noopener noreferrer">Abrir PSN</a>` : ''}</td>`;
   $('tbody').appendChild(tr);
+}
+
+function appendDiscardedRow(r) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td>${escapeHtml(r.pagina)}</td>
+    <td>${escapeHtml(r.nombre)}</td>
+    <td>${escapeHtml(r.plataformas)}</td>
+    <td>${escapeHtml(r.clasificacion)}</td>
+    <td>${escapeHtml(r.precioPromo)}</td>
+    <td>${escapeHtml(r.motivoExclusion)}</td>
+    <td>${escapeHtml(r.detalleExclusion)}</td>
+    <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank" rel="noopener noreferrer">Abrir PSN</a>` : ''}</td>`;
+  $('tbodyDescartados').appendChild(tr);
 }
 
 async function fetchPage(page, size) {
@@ -174,59 +244,102 @@ async function fetchPage(page, size) {
   return data;
 }
 
+function resetData() {
+  rows.length = 0;
+  descartados.length = 0;
+  errores = 0;
+  cancelado = false;
+  leidosPSN = 0;
+  paginasProcesadas = 0;
+
+  motivos.TIPO_EXCLUIDO = 0;
+  motivos.CONTENIDO_EXTRA = 0;
+  motivos.LISTA_NEGRA = 0;
+  motivos.VR_EXCLUSIVO = 0;
+
+  $('tbody').innerHTML = '';
+  $('tbodyDescartados').innerHTML = '';
+  $('barra').style.width = '0%';
+
+  $('btnExcel').disabled = true;
+  $('btnCsv').disabled = true;
+  $('btnDescartados').disabled = true;
+  $('descartadosBox').classList.add('hidden');
+
+  updateStats();
+}
+
 async function extraer() {
   const desde = Math.max(1, parseInt($('desde').value || '1', 10));
   const hasta = Math.min(150, parseInt($('hasta').value || '150', 10));
   const size = Math.min(24, Math.max(1, parseInt($('size').value || '24', 10)));
   const delay = Math.max(0, parseInt($('delay').value || '180', 10));
 
-  if (hasta < desde) return setStatus('La página final no puede ser menor que la inicial.', 'warn');
+  if (hasta < desde) {
+    return setStatus('La página final no puede ser menor que la inicial.', 'warn');
+  }
 
-  rows.length = 0;
-  errores = 0;
-  cancelado = false;
-  $('tbody').innerHTML = '';
+  resetData();
   $('btnExtraer').disabled = true;
-  $('btnExcel').disabled = true;
-  $('btnCsv').disabled = true;
-  $('barra').style.width = '0%';
 
-  const total = hasta - desde + 1;
-  let procesadas = 0;
+  const totalPaginas = hasta - desde + 1;
 
   for (let page = desde; page <= hasta; page++) {
     if (cancelado) break;
-    setStatus(`Analizando página ${page} de ${hasta}...\nProductos acumulados: ${rows.length}`);
+
+    setStatus(
+      `Analizando página ${page} de ${hasta}...\n` +
+      `Leídos PSN: ${leidosPSN} | Comerciales: ${rows.length} | Descartados: ${descartados.length}`
+    );
 
     try {
       const data = await fetchPage(page, size);
+      leidosPSN += Number(data.cantidadOriginal || 0);
+
       for (const r of (data.productos || [])) {
         rows.push(r);
         appendRow(r);
+      }
+
+      for (const r of (data.descartados || [])) {
+        descartados.push(r);
+        if (motivos[r.motivoExclusion] !== undefined) {
+          motivos[r.motivoExclusion]++;
+        }
+        appendDiscardedRow(r);
       }
     } catch (e) {
       errores++;
       console.error('Página', page, e);
     }
 
-    procesadas++;
-    $('barra').style.width = `${Math.round((procesadas / total) * 100)}%`;
-    updateStats(procesadas);
+    paginasProcesadas++;
+    $('barra').style.width = `${Math.round((paginasProcesadas / totalPaginas) * 100)}%`;
+    updateStats();
+
     if (delay && page < hasta) await sleep(delay);
   }
 
   $('btnExtraer').disabled = false;
-  $('btnExcel').disabled = rows.length === 0;
+  $('btnExcel').disabled = rows.length === 0 && descartados.length === 0;
   $('btnCsv').disabled = rows.length === 0;
+  $('btnDescartados').disabled = descartados.length === 0;
 
-  if (rows.length) {
-    setStatus(`Extracción terminada. ${rows.length} productos obtenidos de ${procesadas} páginas. Errores: ${errores}.`, errores ? 'warn' : 'ok');
+  if (leidosPSN > 0) {
+    setStatus(
+      `Extracción terminada.\n` +
+      `${leidosPSN} productos leídos desde PSN.\n` +
+      `${rows.length} productos comerciales.\n` +
+      `${descartados.length} productos descartados.\n` +
+      `Páginas: ${paginasProcesadas}. Errores: ${errores}.`,
+      errores ? 'warn' : 'ok'
+    );
   } else {
     setStatus('No se obtuvieron productos. Revisá el error de la API antes de continuar.', 'warn');
   }
 }
 
-function exportRows() {
+function exportCommercialRows() {
   return rows.map(r => ({
     'Página': r.pagina,
     'Nombre': r.nombre,
@@ -239,26 +352,64 @@ function exportRows() {
   }));
 }
 
+function exportDiscardedRows() {
+  return descartados.map(r => ({
+    'Página': r.pagina,
+    'Nombre': r.nombre,
+    'Plataformas': r.plataformas,
+    'Clasificación': r.clasificacion,
+    'Precio original': r.precioOriginal,
+    'Precio promo': r.precioPromo,
+    'Descuento': r.descuento,
+    'Motivo de exclusión': r.motivoExclusion,
+    'Detalle de exclusión': r.detalleExclusion,
+    'URL directa PSN': r.urlDirecta
+  }));
+}
+
 function descargarExcel() {
-  if (!rows.length || typeof XLSX === 'undefined') return;
-  const ws = XLSX.utils.json_to_sheet(exportRows());
-  ws['!cols'] = [
+  if ((!rows.length && !descartados.length) || typeof XLSX === 'undefined') return;
+
+  const wb = XLSX.utils.book_new();
+
+  const wsCommercial = XLSX.utils.json_to_sheet(exportCommercialRows());
+  wsCommercial['!cols'] = [
     {wch:8},{wch:55},{wch:18},{wch:20},{wch:16},{wch:16},{wch:12},{wch:75}
   ];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Ofertas PSN AR');
-  XLSX.writeFile(wb, `AREA51_Ofertas_PSN_AR_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.utils.book_append_sheet(wb, wsCommercial, 'Ofertas comerciales');
+
+  const wsDiscarded = XLSX.utils.json_to_sheet(exportDiscardedRows());
+  wsDiscarded['!cols'] = [
+    {wch:8},{wch:55},{wch:18},{wch:20},{wch:16},{wch:16},{wch:12},{wch:22},{wch:35},{wch:75}
+  ];
+  XLSX.utils.book_append_sheet(wb, wsDiscarded, 'Descartados');
+
+  XLSX.writeFile(
+    wb,
+    `AREA51_Ofertas_PSN_AR_FILTRADAS_${new Date().toISOString().slice(0,10)}.xlsx`
+  );
 }
 
 function descargarCsv() {
   if (!rows.length) return;
-  const headers = ['Página','Nombre','Plataformas','Clasificación','Precio original','Precio promo','Descuento','URL directa PSN'];
-  const lines = [headers, ...rows.map(r => [r.pagina,r.nombre,r.plataformas,r.clasificacion,r.precioOriginal,r.precioPromo,r.descuento,r.urlDirecta])]
-    .map(cols => cols.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','));
+
+  const headers = [
+    'Página','Nombre','Plataformas','Clasificación',
+    'Precio original','Precio promo','Descuento','URL directa PSN'
+  ];
+
+  const lines = [
+    headers,
+    ...rows.map(r => [
+      r.pagina,r.nombre,r.plataformas,r.clasificacion,
+      r.precioOriginal,r.precioPromo,r.descuento,r.urlDirecta
+    ])
+  ].map(cols => cols.map(v => `"${String(v ?? '').replace(/"/g,'""')}"`).join(','));
+
   const blob = new Blob(['\ufeff' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `AREA51_Ofertas_PSN_AR_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `AREA51_Ofertas_PSN_AR_FILTRADAS_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -266,17 +417,20 @@ function descargarCsv() {
 $('btnExtraer').addEventListener('click', extraer);
 $('btnExcel').addEventListener('click', descargarExcel);
 $('btnCsv').addEventListener('click', descargarCsv);
+
+$('btnDescartados').addEventListener('click', () => {
+  const box = $('descartadosBox');
+  const hidden = box.classList.toggle('hidden');
+  $('btnDescartados').textContent = hidden
+    ? '🧹 Ver descartados'
+    : '👁️ Ocultar descartados';
+});
+
 $('btnLimpiar').addEventListener('click', () => {
   cancelado = true;
-  rows.length = 0;
-  errores = 0;
-  $('tbody').innerHTML = '';
-  $('barra').style.width = '0%';
-  updateStats(0);
-  $('btnExcel').disabled = true;
-  $('btnCsv').disabled = true;
+  resetData();
   $('btnExtraer').disabled = false;
-  setStatus('Datos limpiados.');
+  setStatus('Datos limpiados. La consulta PSN y los filtros permanecen sin cambios.');
 });
 </script>
 </body>
