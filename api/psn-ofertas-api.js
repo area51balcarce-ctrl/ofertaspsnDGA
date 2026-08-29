@@ -360,10 +360,8 @@ export default async function handler(req, res) {
     });
   }
 
-  const page = Math.max(
-    1,
-    Math.min(150, Number.parseInt(req.query.page || '1', 10))
-  );
+  const parsedPage = Number.parseInt(req.query.page || '1', 10);
+  const page = Math.max(1, Number.isFinite(parsedPage) ? parsedPage : 1);
 
   const size = Math.max(
     1,
@@ -407,6 +405,9 @@ export default async function handler(req, res) {
       cantidadDescartados: descartados.length,
       descartadosPorMotivo,
       pageInfo: grid.pageInfo || null,
+      totalPaginasDetectadas: Number.isFinite(Number(grid?.pageInfo?.totalCount))
+        ? Math.max(1, Math.ceil(Number(grid.pageInfo.totalCount) / size))
+        : null,
       reportingName: grid.reportingName || '',
       queryHash: QUERY_HASH,
       fuente: {
