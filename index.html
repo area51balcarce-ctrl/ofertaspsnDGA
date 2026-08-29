@@ -54,6 +54,26 @@
     }
     .primary { background:linear-gradient(90deg,#00e676,#25d366); color:#051107; }
     .secondary { background:#281d35; color:#fff; border:1px solid #4d3d61; }
+    .danger-mini {
+      width:30px;
+      height:30px;
+      padding:0;
+      border-radius:8px;
+      background:#3a1017;
+      color:#ff5c6c;
+      border:1px solid #71202c;
+      font-size:14px;
+      line-height:1;
+    }
+    .danger-mini:hover { background:#551520; }
+    .restore-mini {
+      padding:7px 11px;
+      border-radius:8px;
+      background:#17351f;
+      color:#69f0ae;
+      border:1px solid #2c6540;
+      font-size:11px;
+    }
     button:disabled { opacity:.5; cursor:not-allowed; }
     .status {
       padding:12px;
@@ -111,6 +131,7 @@
     <button class="secondary" id="btnExcel" disabled>📊 Descargar Excel</button>
     <button class="secondary" id="btnCsv" disabled>📄 Descargar CSV</button>
     <button class="secondary" id="btnDescartados" disabled>🧹 Ver descartados</button>
+    <button class="secondary" id="btnEliminados" disabled>🚫 Ver eliminados por mí</button>
     <button class="secondary" id="btnLimpiar">🧽 Limpiar</button>
   </div>
 
@@ -127,6 +148,7 @@
     <div class="stat">Por contenido extra<b id="sExtra">0</b></div>
     <div class="stat">Lista negra<b id="sLista">0</b></div>
     <div class="stat">VR exclusivo<b id="sVr">0</b></div>
+    <div class="stat">Eliminados por mí<b id="sEliminados">0</b></div>
     <div class="stat">Errores<b id="sErrores">0</b></div>
   </div>
 
@@ -134,7 +156,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Página</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
+        <th>Página</th><th>❌</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
         <th>Precio original</th><th>Precio promo</th><th>Descuento</th><th>URL directa</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
@@ -153,6 +175,18 @@
       </table>
     </div>
   </div>
+
+  <div id="eliminadosBox" class="discarded-box hidden">
+    <h2>Eliminados por mí</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Nombre</th><th>Plataformas</th><th>Fecha eliminación</th><th>Origen</th><th>Acción</th>
+        </tr></thead>
+        <tbody id="tbodyEliminados"></tbody>
+      </table>
+    </div>
+  </div>
 </div>
 
 <!-- SheetJS corre en el navegador: no hace falta tocar package.json -->
@@ -160,11 +194,13 @@
 <script>
 const rows = [];
 const descartados = [];
+const eliminadosPorMi = [];
 
 let errores = 0;
 let cancelado = false;
 let leidosPSN = 0;
 let paginasProcesadas = 0;
+let eliminadosSet = new Set();
 
 const motivos = {
   TIPO_EXCLUIDO: 0,
@@ -175,6 +211,15 @@ const motivos = {
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function normalizeText(value = '') {
+  return String(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function setStatus(txt, clase='') {
   $('estado').className = 'status ' + clase;
@@ -198,7 +243,9 @@ function updateStats() {
   $('sExtra').textContent = motivos.CONTENIDO_EXTRA;
   $('sLista').textContent = motivos.LISTA_NEGRA;
   $('sVr').textContent = motivos.VR_EXCLUSIVO;
+  $('sEliminados').textContent = eliminadosPorMi.length;
   $('sErrores').textContent = errores;
+  $('btnEliminados').disabled = eliminadosPorMi.length === 0;
 }
 
 function escapeHtml(value) {
@@ -209,8 +256,10 @@ function escapeHtml(value) {
 
 function appendRow(r) {
   const tr = document.createElement('tr');
+
   tr.innerHTML = `
     <td>${escapeHtml(r.pagina)}</td>
+    <td><button class="danger-mini" type="button" title="Eliminar de mi catálogo">✖</button></td>
     <td>${escapeHtml(r.nombre)}</td>
     <td>${escapeHtml(r.plataformas)}</td>
     <td>${escapeHtml(r.clasificacion)}</td>
@@ -218,7 +267,14 @@ function appendRow(r) {
     <td>${escapeHtml(r.precioPromo)}</td>
     <td>${escapeHtml(r.descuento)}</td>
     <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank" rel="noopener noreferrer">Abrir PSN</a>` : ''}</td>`;
+
+  tr.querySelector('.danger-mini').addEventListener('click', () => eliminarPorMi(r));
   $('tbody').appendChild(tr);
+}
+
+function renderCommercialRows() {
+  $('tbody').innerHTML = '';
+  rows.forEach(appendRow);
 }
 
 function appendDiscardedRow(r) {
@@ -233,6 +289,165 @@ function appendDiscardedRow(r) {
     <td>${escapeHtml(r.detalleExclusion)}</td>
     <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank" rel="noopener noreferrer">Abrir PSN</a>` : ''}</td>`;
   $('tbodyDescartados').appendChild(tr);
+}
+
+function renderEliminados() {
+  $('tbodyEliminados').innerHTML = '';
+
+  for (const item of eliminadosPorMi) {
+    const tr = document.createElement('tr');
+    const fecha = item.fechaEliminacion
+      ? new Date(item.fechaEliminacion).toLocaleString('es-AR')
+      : '';
+
+    tr.innerHTML = `
+      <td>${escapeHtml(item.nombre)}</td>
+      <td>${escapeHtml(Array.isArray(item.plataformas) ? item.plataformas.join(', ') : '')}</td>
+      <td>${escapeHtml(fecha)}</td>
+      <td>${escapeHtml(item.origen || 'manual')}</td>
+      <td><button class="restore-mini" type="button">↩ Restaurar</button></td>`;
+
+    tr.querySelector('.restore-mini').addEventListener('click', () => restaurarEliminado(item));
+    $('tbodyEliminados').appendChild(tr);
+  }
+
+  updateStats();
+}
+
+async function cargarEliminados({silencioso = false} = {}) {
+  try {
+    const res = await fetch('/api/eliminados-api', { cache: 'no-store' });
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+    }
+
+    eliminadosPorMi.length = 0;
+    eliminadosPorMi.push(...(data.eliminados || []));
+
+    eliminadosSet = new Set(
+      eliminadosPorMi.map(item =>
+        item.nombreNormalizado || normalizeText(item.nombre)
+      )
+    );
+
+    renderEliminados();
+    return true;
+  } catch (e) {
+    console.error('Error cargando eliminados por mí:', e);
+
+    if (!silencioso) {
+      setStatus(
+        'No se pudo cargar ELIMINADOS POR MÍ. No se iniciará el análisis para evitar mostrar juegos que ya bloqueaste.',
+        'warn'
+      );
+    }
+
+    return false;
+  }
+}
+
+async function eliminarPorMi(r) {
+  const nombre = String(r.nombre || '').trim();
+  if (!nombre) return;
+
+  const confirmar = confirm(
+    `¿Eliminar "${nombre}" de tu catálogo?\n\n` +
+    `Quedará guardado en ELIMINADOS POR MÍ y no aparecerá en futuros análisis.`
+  );
+
+  if (!confirmar) return;
+
+  try {
+    const plataformas = String(r.plataformas || '')
+      .split(',')
+      .map(x => x.trim())
+      .filter(Boolean);
+
+    const res = await fetch('/api/eliminados-api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        nombre,
+        productId: r.productId || '',
+        plataformas
+      })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+    }
+
+    await cargarEliminados({silencioso: true});
+
+    const nombreNormalizado = normalizeText(nombre);
+
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (normalizeText(rows[i].nombre) === nombreNormalizado) {
+        rows.splice(i, 1);
+      }
+    }
+
+    renderCommercialRows();
+    updateStats();
+
+    $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
+    $('btnCsv').disabled = rows.length === 0;
+
+    setStatus(
+      `"${nombre}" fue agregado a ELIMINADOS POR MÍ.\n` +
+      `No volverá a aparecer en futuros análisis mientras permanezca en esa lista.`,
+      'ok'
+    );
+  } catch (e) {
+    console.error('Error eliminando producto:', e);
+    setStatus(`No se pudo eliminar "${nombre}". ${e.message}`, 'warn');
+  }
+}
+
+async function restaurarEliminado(item) {
+  const nombre = String(item.nombre || '').trim();
+  if (!nombre) return;
+
+  const confirmar = confirm(
+    `¿Restaurar "${nombre}"?\n\n` +
+    `Volverá a aparecer la próxima vez que analices las páginas de PSN.`
+  );
+
+  if (!confirmar) return;
+
+  try {
+    const res = await fetch('/api/eliminados-api', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nombre })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+    }
+
+    await cargarEliminados({silencioso: true});
+
+    if (eliminadosPorMi.length === 0) {
+      $('eliminadosBox').classList.add('hidden');
+      $('btnEliminados').textContent = '🚫 Ver eliminados por mí';
+    }
+
+    setStatus(
+      `"${nombre}" fue restaurado correctamente.\n` +
+      `Volvé a analizar las páginas para que reaparezca en Ofertas comerciales.`,
+      'ok'
+    );
+  } catch (e) {
+    console.error('Error restaurando producto:', e);
+    setStatus(`No se pudo restaurar "${nombre}". ${e.message}`, 'warn');
+  }
 }
 
 async function fetchPage(page, size) {
@@ -279,6 +494,9 @@ async function extraer() {
     return setStatus('La página final no puede ser menor que la inicial.', 'warn');
   }
 
+  const baseEliminadosOK = await cargarEliminados();
+  if (!baseEliminadosOK) return;
+
   resetData();
   $('btnExtraer').disabled = true;
 
@@ -289,7 +507,7 @@ async function extraer() {
 
     setStatus(
       `Analizando página ${page} de ${hasta}...\n` +
-      `Leídos PSN: ${leidosPSN} | Comerciales: ${rows.length} | Descartados: ${descartados.length}`
+      `Leídos PSN: ${leidosPSN} | Comerciales: ${rows.length} | Descartados: ${descartados.length} | Eliminados por mí: ${eliminadosPorMi.length}`
     );
 
     try {
@@ -297,6 +515,10 @@ async function extraer() {
       leidosPSN += Number(data.cantidadOriginal || 0);
 
       for (const r of (data.productos || [])) {
+        if (eliminadosSet.has(normalizeText(r.nombre))) {
+          continue;
+        }
+
         rows.push(r);
         appendRow(r);
       }
@@ -321,7 +543,7 @@ async function extraer() {
   }
 
   $('btnExtraer').disabled = false;
-  $('btnExcel').disabled = rows.length === 0 && descartados.length === 0;
+  $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
   $('btnCsv').disabled = rows.length === 0;
   $('btnDescartados').disabled = descartados.length === 0;
 
@@ -331,6 +553,7 @@ async function extraer() {
       `${leidosPSN} productos leídos desde PSN.\n` +
       `${rows.length} productos comerciales.\n` +
       `${descartados.length} productos descartados.\n` +
+      `${eliminadosPorMi.length} productos en ELIMINADOS POR MÍ.\n` +
       `Páginas: ${paginasProcesadas}. Errores: ${errores}.`,
       errores ? 'warn' : 'ok'
     );
@@ -367,8 +590,19 @@ function exportDiscardedRows() {
   }));
 }
 
+function exportEliminadosRows() {
+  return eliminadosPorMi.map(r => ({
+    'Nombre': r.nombre,
+    'Nombre normalizado': r.nombreNormalizado,
+    'Product ID': r.productId || '',
+    'Plataformas': Array.isArray(r.plataformas) ? r.plataformas.join(', ') : '',
+    'Fecha eliminación': r.fechaEliminacion || '',
+    'Origen': r.origen || 'manual'
+  }));
+}
+
 function descargarExcel() {
-  if ((!rows.length && !descartados.length) || typeof XLSX === 'undefined') return;
+  if ((!rows.length && !descartados.length && !eliminadosPorMi.length) || typeof XLSX === 'undefined') return;
 
   const wb = XLSX.utils.book_new();
 
@@ -383,6 +617,12 @@ function descargarExcel() {
     {wch:8},{wch:55},{wch:18},{wch:20},{wch:16},{wch:16},{wch:12},{wch:22},{wch:35},{wch:75}
   ];
   XLSX.utils.book_append_sheet(wb, wsDiscarded, 'Descartados');
+
+  const wsEliminados = XLSX.utils.json_to_sheet(exportEliminadosRows());
+  wsEliminados['!cols'] = [
+    {wch:55},{wch:55},{wch:28},{wch:18},{wch:28},{wch:14}
+  ];
+  XLSX.utils.book_append_sheet(wb, wsEliminados, 'Eliminados por mi');
 
   XLSX.writeFile(
     wb,
@@ -426,12 +666,22 @@ $('btnDescartados').addEventListener('click', () => {
     : '👁️ Ocultar descartados';
 });
 
+$('btnEliminados').addEventListener('click', () => {
+  const box = $('eliminadosBox');
+  const hidden = box.classList.toggle('hidden');
+  $('btnEliminados').textContent = hidden
+    ? '🚫 Ver eliminados por mí'
+    : '👁️ Ocultar eliminados por mí';
+});
+
 $('btnLimpiar').addEventListener('click', () => {
   cancelado = true;
   resetData();
   $('btnExtraer').disabled = false;
-  setStatus('Datos limpiados. La consulta PSN y los filtros permanecen sin cambios.');
+  setStatus('Datos limpiados. La consulta PSN, los filtros y ELIMINADOS POR MÍ permanecen sin cambios.');
 });
+
+cargarEliminados({silencioso: true});
 </script>
 </body>
 </html>
