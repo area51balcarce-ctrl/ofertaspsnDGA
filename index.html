@@ -128,8 +128,8 @@
   </div>
 
   <div class="controls">
-    <div><label>Página inicial</label><input id="desde" type="number" min="1" max="150" value="1"></div>
-    <div><label>Página final</label><input id="hasta" type="number" min="1" max="150" value="150"></div>
+    <div><label>Página inicial</label><input id="desde" type="number" min="1" value="1"></div>
+    <div><label>Página final</label><input id="hasta" type="text" value="Automática" readonly></div>
     <div><label>Productos por página</label><input id="size" type="number" min="1" max="24" value="24"></div>
     <div><label>Pausa entre páginas (ms)</label><input id="delay" type="number" min="0" max="5000" value="180"></div>
   </div>
@@ -524,13 +524,8 @@ function resetData() {
 
 async function extraer() {
   const desde = Math.max(1, parseInt($('desde').value || '1', 10));
-  const hasta = Math.min(150, parseInt($('hasta').value || '150', 10));
   const size = Math.min(24, Math.max(1, parseInt($('size').value || '24', 10)));
   const delay = Math.max(0, parseInt($('delay').value || '180', 10));
-
-  if (hasta < desde) {
-    return setStatus('La página final no puede ser menor que la inicial.', 'warn');
-  }
 
   const fuente = validarStoreUrl($('storeUrl').value);
   if (!fuente.ok) {
@@ -542,21 +537,37 @@ async function extraer() {
   if (!baseEliminadosOK) return;
 
   resetData();
+  $('hasta').value = 'Detectando...';
   $('btnExtraer').disabled = true;
 
-  const totalPaginas = hasta - desde + 1;
+  let page = desde;
+  let totalPaginasDetectadas = null;
+  let totalProductosDetectados = null;
 
-  for (let page = desde; page <= hasta; page++) {
-    if (cancelado) break;
+  while (!cancelado) {
+    const etiquetaFinal = totalPaginasDetectadas
+      ? String(totalPaginasDetectadas)
+      : 'final automático';
 
     setStatus(
-      `Analizando página ${page} de ${hasta}...\n` +
+      `Analizando página ${page} de ${etiquetaFinal}...\n` +
       `Fuente: ${storeUrl ? 'link pegado' : 'categoría predeterminada'}\n` +
       `Leídos PSN: ${leidosPSN} | Comerciales: ${rows.length} | Descartados: ${descartados.length} | Eliminados por mí: ${eliminadosPorMi.length}`
     );
 
+    let data;
+
     try {
-      const data = await fetchPage(page, size, storeUrl);
+      data = await fetchPage(page, size, storeUrl);
+
+      const totalCount = Number(data?.pageInfo?.totalCount);
+
+      if (Number.isFinite(totalCount) && totalCount >= 0) {
+        totalProductosDetectados = totalCount;
+        totalPaginasDetectadas = Math.max(1, Math.ceil(totalCount / size));
+        $('hasta').value = String(totalPaginasDetectadas);
+      }
+
       leidosPSN += Number(data.cantidadOriginal || 0);
 
       for (const r of (data.productos || [])) {
@@ -578,13 +589,45 @@ async function extraer() {
     } catch (e) {
       errores++;
       console.error('Página', page, e);
+
+      // Si todavía no pudimos detectar el final, no avanzamos a ciegas.
+      if (!totalPaginasDetectadas) {
+        break;
+      }
     }
 
     paginasProcesadas++;
-    $('barra').style.width = `${Math.round((paginasProcesadas / totalPaginas) * 100)}%`;
+
+    if (totalPaginasDetectadas) {
+      const paginasAProcesar = Math.max(1, totalPaginasDetectadas - desde + 1);
+      const procesadasDesdeInicio = Math.max(0, page - desde + 1);
+      const porcentaje = Math.min(
+        100,
+        Math.round((procesadasDesdeInicio / paginasAProcesar) * 100)
+      );
+      $('barra').style.width = `${porcentaje}%`;
+    }
+
     updateStats();
 
-    if (delay && page < hasta) await sleep(delay);
+    const cantidadPagina = Number(data?.cantidadOriginal || 0);
+
+    // Final principal: pageInfo.totalCount de PlayStation.
+    if (totalPaginasDetectadas && page >= totalPaginasDetectadas) {
+      break;
+    }
+
+    // Respaldo: si PlayStation alguna vez no devolviera totalCount,
+    // una página incompleta marca el final real de la categoría.
+    if (!totalPaginasDetectadas && cantidadPagina < size) {
+      totalPaginasDetectadas = page;
+      $('hasta').value = String(page);
+      break;
+    }
+
+    page++;
+
+    if (delay) await sleep(delay);
   }
 
   $('btnExtraer').disabled = false;
@@ -593,18 +636,29 @@ async function extraer() {
   $('btnDescartados').disabled = descartados.length === 0;
 
   if (leidosPSN > 0) {
+    $('barra').style.width = '100%';
+
     setStatus(
       `Extracción terminada.\n` +
       `Fuente: ${storeUrl || 'categoría PSN predeterminada'}.\n` +
+      `${totalProductosDetectados !== null ? `${totalProductosDetectados} productos detectados por PlayStation.\n` : ''}` +
       `${leidosPSN} productos leídos desde PSN.\n` +
       `${rows.length} productos comerciales.\n` +
       `${descartados.length} productos descartados.\n` +
       `${eliminadosPorMi.length} productos en ELIMINADOS POR MÍ.\n` +
-      `Páginas: ${paginasProcesadas}. Errores: ${errores}.`,
+      `Final automático: página ${totalPaginasDetectadas || page}.\n` +
+      `Páginas procesadas: ${paginasProcesadas}. Errores: ${errores}.`,
       errores ? 'warn' : 'ok'
     );
   } else {
-    setStatus('No se obtuvieron productos. Revisá el error de la API antes de continuar.', 'warn');
+    if ($('hasta').value === 'Detectando...') {
+      $('hasta').value = 'Automática';
+    }
+
+    setStatus(
+      'No se obtuvieron productos. Revisá el error de la API antes de continuar.',
+      'warn'
+    );
   }
 }
 
@@ -723,6 +777,7 @@ $('btnEliminados').addEventListener('click', () => {
 $('btnLimpiar').addEventListener('click', () => {
   cancelado = true;
   resetData();
+  $('hasta').value = 'Automática';
   $('btnExtraer').disabled = false;
   setStatus('Datos limpiados. La consulta PSN, los filtros y ELIMINADOS POR MÍ permanecen sin cambios.');
 });
