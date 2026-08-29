@@ -1,26 +1,33 @@
 // api/psn-ofertas-api.js
-// AREA 51 - Extractor independiente de ofertas PS Store Argentina.
+// AREA 51 - Extractor independiente de PlayStation Store.
 // Proyecto exclusivo: ofertaspsnDGA.
-// Se conserva intacta la consulta a PlayStation que ya funciona.
-// Esta versión AGREGA una capa comercial después de normalizar los productos.
+// LEY DEL PROYECTO: se conserva la consulta que ya funciona y solo se agrega
+// soporte para recibir un link de categoría de PlayStation Store de forma dinámica.
 
 const PSN_GRAPHQL = 'https://web.np.playstation.com/api/graphql/v1//op';
-const CATEGORY_ID = '3f772501-f6f8-49b7-abac-874a88ca4897';
-const LOCALE = 'es-AR';
-const STORE_PREFIX = 'https://store.playstation.com/es-ar/product/';
 
-const QUERY_HASH =
-  '88c0b9a1273c6d320c51cd73e390924e21ae28bf09f01cde8b84b1034b16cd03';
+// -----------------------------------------------------------------------------
+// RESPALDO ACTUAL - SE CONSERVA SIN CAMBIOS
+// Si el HTML no manda ningún link, se usa exactamente esta configuración.
+// -----------------------------------------------------------------------------
+const DEFAULT_CATEGORY_ID = '3f772501-f6f8-49b7-abac-874a88ca4897';
+const DEFAULT_REGION = 'es-ar';
+const DEFAULT_LOCALE = 'es-AR';
+const DEFAULT_SORT_NAME = 'productName';
+const DEFAULT_SORT_ASCENDING = true;
 
-const FILTERS = [
+const DEFAULT_FILTERS = [
   'storeDisplayClassification:FULL_GAME',
   'storeDisplayClassification:GAME_BUNDLE',
   'storeDisplayClassification:PREMIUM_EDITION',
   'storeDisplayClassification:OTHER'
 ];
 
+const QUERY_HASH =
+  '88c0b9a1273c6d320c51cd73e390924e21ae28bf09f01cde8b84b1034b16cd03';
+
 // -----------------------------------------------------------------------------
-// CAPA COMERCIAL - NUEVA
+// CAPA COMERCIAL - SE CONSERVA
 // -----------------------------------------------------------------------------
 
 const EXCLUDED_TYPES = [
@@ -109,25 +116,104 @@ function normalizeText(value) {
     .trim();
 }
 
-function buildVariables(page, size) {
+function localeFromRegion(region) {
+  const parts = asText(region).toLowerCase().split('-');
+
+  if (parts.length !== 2 || parts[0].length !== 2 || parts[1].length !== 2) {
+    return DEFAULT_LOCALE;
+  }
+
+  return `${parts[0]}-${parts[1].toUpperCase()}`;
+}
+
+function parseStoreUrl(storeUrl) {
+  const raw = asText(storeUrl).trim();
+
+  // Campo vacío = comportamiento anterior exacto.
+  if (!raw) {
+    return {
+      sourceMode: 'default',
+      originalUrl: '',
+      region: DEFAULT_REGION,
+      locale: DEFAULT_LOCALE,
+      categoryId: DEFAULT_CATEGORY_ID,
+      filters: [...DEFAULT_FILTERS],
+      sortName: DEFAULT_SORT_NAME,
+      sortAscending: DEFAULT_SORT_ASCENDING
+    };
+  }
+
+  let url;
+
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('El link de PlayStation Store no es válido.');
+  }
+
+  if (url.protocol !== 'https:' || url.hostname !== 'store.playstation.com') {
+    throw new Error('El enlace ingresado no pertenece a PlayStation Store.');
+  }
+
+  const match = url.pathname.match(
+    /^\/([a-z]{2}-[a-z]{2})\/category\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/\d+)?\/?$/i
+  );
+
+  if (!match) {
+    throw new Error(
+      'El enlace de PlayStation no contiene una categoría compatible con este extractor.'
+    );
+  }
+
+  const region = match[1].toLowerCase();
+  const categoryId = match[2].toLowerCase();
+
+  // Los filtros se toman ÚNICAMENTE si el link realmente los trae.
+  // Ejemplo: ?FULL_GAME=storeDisplayClassification
+  const filters = [];
+
+  for (const [key, value] of url.searchParams.entries()) {
+    if (value === 'storeDisplayClassification') {
+      filters.push(`storeDisplayClassification:${key}`);
+    }
+  }
+
+  const sortName = asText(url.searchParams.get('sortBy')).trim() || DEFAULT_SORT_NAME;
+  const sortOrder = normalizeText(url.searchParams.get('sortOrder'));
+  const sortAscending = sortOrder ? sortOrder !== 'desc' : DEFAULT_SORT_ASCENDING;
+
   return {
-    id: CATEGORY_ID,
+    sourceMode: 'dynamic',
+    originalUrl: url.toString(),
+    region,
+    locale: localeFromRegion(region),
+    categoryId,
+    filters,
+    sortName,
+    sortAscending
+  };
+}
+
+function buildVariables(page, size, source) {
+  return {
+    id: source.categoryId,
     pageArgs: {
       size,
       offset: (page - 1) * size
     },
     sortBy: {
-      name: 'productName',
-      isAscending: true
+      name: source.sortName,
+      isAscending: source.sortAscending
     },
-    filterBy: FILTERS,
+    filterBy: source.filters,
     facetOptions: []
   };
 }
 
-function normalizeProduct(product, page) {
+function normalizeProduct(product, page, source) {
   const price = product?.price || {};
   const id = asText(product?.id).trim();
+  const storePrefix = `https://store.playstation.com/${source.region}/product/`;
 
   return {
     pagina: page,
@@ -140,7 +226,7 @@ function normalizeProduct(product, page) {
     precioPromo: asText(price?.discountedPrice || price?.basePrice).trim(),
     descuento: asText(price?.discountText).trim(),
     productId: id,
-    urlDirecta: id ? STORE_PREFIX + encodeURIComponent(id) : ''
+    urlDirecta: id ? storePrefix + encodeURIComponent(id) : ''
   };
 }
 
@@ -194,8 +280,8 @@ function getCommercialExclusion(row) {
   return null;
 }
 
-async function requestPage(page, size) {
-  const variables = buildVariables(page, size);
+async function requestPage(page, size, source) {
+  const variables = buildVariables(page, size, source);
 
   const extensions = {
     persistedQuery: {
@@ -213,13 +299,13 @@ async function requestPage(page, size) {
     method: 'GET',
     headers: {
       'Accept': 'application/json, text/plain, */*',
-      'Accept-Language': 'es-AR,es;q=0.9',
+      'Accept-Language': `${source.locale},es;q=0.9,en;q=0.8`,
       'Content-Type': 'application/json',
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
       'Origin': 'https://store.playstation.com',
-      'Referer': 'https://store.playstation.com/',
-      'x-psn-store-locale': LOCALE,
+      'Referer': source.originalUrl || `https://store.playstation.com/${source.region}/`,
+      'x-psn-store-locale': source.locale,
       'x-apollo-operation-name': 'categoryGridRetrieve',
       'apollo-require-preflight': 'true'
     }
@@ -285,9 +371,10 @@ export default async function handler(req, res) {
   );
 
   try {
-    const grid = await requestPage(page, size);
+    const source = parseStoreUrl(req.query.storeUrl || '');
+    const grid = await requestPage(page, size, source);
     const products = Array.isArray(grid.products) ? grid.products : [];
-    const normalizedRows = products.map((p) => normalizeProduct(p, page));
+    const normalizedRows = products.map((p) => normalizeProduct(p, page, source));
 
     const comerciales = [];
     const descartados = [];
@@ -322,6 +409,16 @@ export default async function handler(req, res) {
       pageInfo: grid.pageInfo || null,
       reportingName: grid.reportingName || '',
       queryHash: QUERY_HASH,
+      fuente: {
+        modo: source.sourceMode,
+        url: source.originalUrl,
+        region: source.region,
+        locale: source.locale,
+        categoryId: source.categoryId,
+        filtros: source.filters,
+        sortBy: source.sortName,
+        sortOrder: source.sortAscending ? 'asc' : 'desc'
+      },
       productos: comerciales,
       descartados
     });
