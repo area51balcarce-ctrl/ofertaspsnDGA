@@ -29,6 +29,8 @@
     h2 { margin:18px 0 10px; font-size:17px; }
     .sub { color:#bbb; font-size:13px; margin-top:4px; }
     .muted { color:#aaa; font-size:12px; margin-top:5px; }
+    .source-control { margin:18px 0 4px; }
+    .source-help { color:#8f8799; font-size:11px; margin-top:6px; }
     .controls {
       display:grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -117,6 +119,12 @@
       <div class="sub">Juego completo + Paquete de juego + Edición premium + Complemento</div>
       <div class="muted">Nueva capa comercial: tipos excluidos + extras + lista negra + VR exclusivo conservador</div>
     </div>
+  </div>
+
+  <div class="source-control">
+    <label for="storeUrl">🔗 Link de PlayStation Store a analizar</label>
+    <input id="storeUrl" type="url" spellcheck="false" autocomplete="off" placeholder="https://store.playstation.com/es-ar/category/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx/1" />
+    <div class="source-help">Pegá una categoría de PlayStation Store. Si lo dejás vacío, se usa la categoría predeterminada que ya funcionaba.</div>
   </div>
 
   <div class="controls">
@@ -450,8 +458,38 @@ async function restaurarEliminado(item) {
   }
 }
 
-async function fetchPage(page, size) {
-  const res = await fetch(`/api/psn-ofertas-api?page=${encodeURIComponent(page)}&size=${encodeURIComponent(size)}`, {
+function validarStoreUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { ok: true, url: '' };
+
+  try {
+    const parsed = new URL(raw);
+    const esPlayStation = parsed.protocol === 'https:' && parsed.hostname === 'store.playstation.com';
+    const esCategoria = /^\/[a-z]{2}-[a-z]{2}\/category\/[0-9a-f-]{36}(?:\/\d+)?\/?$/i.test(parsed.pathname);
+
+    if (!esPlayStation) {
+      return { ok: false, mensaje: 'El enlace ingresado no pertenece a PlayStation Store.' };
+    }
+
+    if (!esCategoria) {
+      return { ok: false, mensaje: 'El enlace de PlayStation no contiene una categoría compatible con este extractor.' };
+    }
+
+    return { ok: true, url: parsed.toString() };
+  } catch {
+    return { ok: false, mensaje: 'El link de PlayStation Store no es válido.' };
+  }
+}
+
+async function fetchPage(page, size, storeUrl = '') {
+  const params = new URLSearchParams({
+    page: String(page),
+    size: String(size)
+  });
+
+  if (storeUrl) params.set('storeUrl', storeUrl);
+
+  const res = await fetch(`/api/psn-ofertas-api?${params.toString()}`, {
     cache: 'no-store'
   });
   const data = await res.json();
@@ -494,6 +532,12 @@ async function extraer() {
     return setStatus('La página final no puede ser menor que la inicial.', 'warn');
   }
 
+  const fuente = validarStoreUrl($('storeUrl').value);
+  if (!fuente.ok) {
+    return setStatus(fuente.mensaje, 'warn');
+  }
+  const storeUrl = fuente.url;
+
   const baseEliminadosOK = await cargarEliminados();
   if (!baseEliminadosOK) return;
 
@@ -507,11 +551,12 @@ async function extraer() {
 
     setStatus(
       `Analizando página ${page} de ${hasta}...\n` +
+      `Fuente: ${storeUrl ? 'link pegado' : 'categoría predeterminada'}\n` +
       `Leídos PSN: ${leidosPSN} | Comerciales: ${rows.length} | Descartados: ${descartados.length} | Eliminados por mí: ${eliminadosPorMi.length}`
     );
 
     try {
-      const data = await fetchPage(page, size);
+      const data = await fetchPage(page, size, storeUrl);
       leidosPSN += Number(data.cantidadOriginal || 0);
 
       for (const r of (data.productos || [])) {
@@ -550,6 +595,7 @@ async function extraer() {
   if (leidosPSN > 0) {
     setStatus(
       `Extracción terminada.\n` +
+      `Fuente: ${storeUrl || 'categoría PSN predeterminada'}.\n` +
       `${leidosPSN} productos leídos desde PSN.\n` +
       `${rows.length} productos comerciales.\n` +
       `${descartados.length} productos descartados.\n` +
