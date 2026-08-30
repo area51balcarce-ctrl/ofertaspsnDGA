@@ -1039,7 +1039,19 @@ function actualizarListaPublicacion() {
       continue;
     }
 
-    salida.push(`${String(r.nombre || '').trim()} | ${String(r.plataformas || '').trim()} | ${formatArs(ars)}`);
+    // Formato final aprobado para pegar directamente en Rentry:
+    // 🎮NOMBRE [PS5 | PS4-PS5] |->$ 00.000<-|
+    // PS4 individual no lleva sufijo; PS5 individual lleva PS5; combinado lleva PS4-PS5.
+    const plataforma = plataformaComercial(r);
+    const sufijoPlataforma = plataforma === 'PS5'
+      ? ' PS5'
+      : plataforma === 'PS4+PS5'
+        ? ' PS4-PS5'
+        : '';
+    const nombrePublicacion = String(r.nombre || '').trim().toUpperCase();
+    const precioPublicacion = Math.round(ars).toLocaleString('es-AR');
+
+    salida.push(`🎮${nombrePublicacion}${sufijoPlataforma} |->$ ${precioPublicacion}<-|`);
   }
 
   $('listaPublicacion').value = salida.join('\n');
