@@ -313,7 +313,7 @@ function nombreBaseEdicion(nombre) {
   for (const patron of patronesEdicion) n = n.replace(patron, ' ');
 
   return n
-    .replace(/[\[\]{}()|:;,_+\-–—]+/g, ' ')
+    .replace(/[\[\]{}()|&:;,_+\-–—]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
