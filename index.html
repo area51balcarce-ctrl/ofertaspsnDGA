@@ -108,6 +108,44 @@
       body { padding:10px; }
       .controls { grid-template-columns:1fr 1fr; }
     }
+
+    .pricing-box {
+      margin-top: 22px;
+      padding: 18px;
+      border: 1px solid rgba(0, 230, 118, .28);
+      border-radius: 14px;
+      background: rgba(18, 11, 28, .72);
+    }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: minmax(280px, .8fr) minmax(360px, 1.2fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+    .pricing-panel {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    textarea {
+      width: 100%;
+      min-height: 390px;
+      resize: vertical;
+      border: 1px solid #393047;
+      border-radius: 10px;
+      background: #0d0814;
+      color: #fff;
+      padding: 12px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    #listaPublicacion { min-height: 390px; }
+    .pricing-actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:10px; }
+    .pricing-status { color:#aaa; font-size:12px; margin-top:8px; white-space:pre-line; }
+    @media (max-width: 850px) {
+      .pricing-grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
@@ -169,6 +207,79 @@
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
+  </div>
+
+  <div class="pricing-box">
+    <h2>💰 Grilla automática de precios para publicar</h2>
+    <div class="sub">La oferta PSN sube siempre al próximo escalón disponible. Menores a US$2 usan el escalón 2. Por encima de US$80 se suma $64.000 y se vuelve a aplicar la misma grilla al excedente.</div>
+
+    <div class="pricing-grid">
+      <div class="pricing-panel">
+        <label for="grillaPrecios">Grilla de valores editable</label>
+        <textarea id="grillaPrecios" spellcheck="false">2 |->$ 1.600<-|
+
+3 |->$ 3.100<-|
+
+5 |->$ 5.500<-|
+
+6 |->$ 6.600<-|
+
+7 |->$ 7.700<-|
+
+8 |->$ 8.700<-|
+
+10 |->$ 9.500<-|
+
+13 |->$ 12.000<-|
+
+15 |->$ 14.000<-|
+
+17 |->$ 15.000<-|
+
+20 |->$ 17.000<-|
+
+23 |->$ 19.000<-|
+
+25 |->$ 21.000<-|
+
+27 |->$ 23.000<-|
+
+30 |->$ 25.000<-|
+
+35 |->$ 28.000<-|
+
+40 |->$ 31.000<-|
+
+45 |->$ 35.000<-|
+
+50 |->$ 40.000<-|
+
+55 |->$ 44.000<-|
+
+60 |->$ 48.000<-|
+
+65 |->$ 52.000<-|
+
+70 |->$ 56.000<-|
+
+75 |->$ 60.000<-|
+
+80 |->$ 64.000<-|</textarea>
+        <div class="pricing-actions">
+          <button class="secondary" id="btnAplicarGrilla" type="button">🔄 Aplicar grilla</button>
+        </div>
+        <div id="estadoGrilla" class="pricing-status">La lista se completa automáticamente al terminar el análisis.</div>
+      </div>
+
+      <div class="pricing-panel">
+        <label for="listaPublicacion">Listado listo para copiar y pegar</label>
+        <textarea id="listaPublicacion" readonly placeholder="Terminá el análisis y acá aparecerá automáticamente la lista con los precios en pesos argentinos."></textarea>
+        <div class="pricing-actions">
+          <button class="primary" id="btnCopiarLista" type="button" disabled>📋 COPIAR LISTA</button>
+        </div>
+        <div id="estadoCopia" class="pricing-status"></div>
+      </div>
+    </div>
   </div>
 
   <div id="descartadosBox" class="discarded-box hidden">
@@ -404,6 +515,7 @@ function aplicarDepuracionFinal() {
   rows.push(...depuradas);
   renderCommercialRows();
   updateStats();
+  actualizarListaPublicacion();
 
   return {
     antes,
@@ -579,6 +691,7 @@ async function eliminarPorMi(r) {
 
     renderCommercialRows();
     updateStats();
+    actualizarListaPublicacion();
 
     $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
     $('btnCsv').disabled = rows.length === 0;
@@ -690,6 +803,9 @@ function resetData() {
 
   $('tbody').innerHTML = '';
   $('tbodyDescartados').innerHTML = '';
+  $('listaPublicacion').value = '';
+  $('btnCopiarLista').disabled = true;
+  $('estadoCopia').textContent = '';
   $('barra').style.width = '0%';
 
   $('btnExcel').disabled = true;
@@ -844,6 +960,112 @@ async function extraer() {
   }
 }
 
+const GRILLA_BASE_TEXTO = $('grillaPrecios').value;
+
+function parseGrillaPrecios(texto) {
+  const mapa = new Map();
+
+  for (const lineaOriginal of String(texto || '').split(/\r?\n/)) {
+    const linea = lineaOriginal.trim();
+    if (!linea) continue;
+
+    const match = linea.match(/^\s*(\d+(?:[.,]\d+)?)\s*\|?\s*-?>?\s*\$?\s*([0-9. ,]+)\s*<?-?\|?\s*$/);
+    if (!match) continue;
+
+    const usd = Number.parseFloat(match[1].replace(',', '.'));
+    const ars = Number.parseInt(match[2].replace(/[^0-9]/g, ''), 10);
+
+    if (Number.isFinite(usd) && usd > 0 && Number.isFinite(ars) && ars >= 0) {
+      mapa.set(usd, ars);
+    }
+  }
+
+  return [...mapa.entries()]
+    .map(([usd, ars]) => ({ usd, ars }))
+    .sort((a, b) => a.usd - b.usd);
+}
+
+function precioArsDesdeGrilla(precioUsd, grilla) {
+  if (!Number.isFinite(precioUsd) || precioUsd < 0 || !grilla.length) return null;
+
+  const maximo = grilla[grilla.length - 1];
+  if (!maximo || maximo.usd <= 0) return null;
+
+  // Regla aprobada: por encima del máximo (80), se suma el valor del bloque
+  // y se vuelve a aplicar la misma grilla al excedente.
+  if (precioUsd > maximo.usd) {
+    return maximo.ars + precioArsDesdeGrilla(precioUsd - maximo.usd, grilla);
+  }
+
+  const escalon = grilla.find(item => precioUsd <= item.usd + 1e-9);
+  return escalon ? escalon.ars : maximo.ars;
+}
+
+function formatArs(valor) {
+  return '$' + Math.round(valor).toLocaleString('es-AR');
+}
+
+function actualizarListaPublicacion() {
+  const grilla = parseGrillaPrecios($('grillaPrecios').value);
+  const salida = [];
+  let sinPrecio = 0;
+  let sinConversion = 0;
+
+  if (!grilla.length) {
+    $('listaPublicacion').value = '';
+    $('btnCopiarLista').disabled = true;
+    $('estadoGrilla').textContent = 'No se pudo leer la grilla. Conservá el formato: 2 |->$ 1.600<-|';
+    return;
+  }
+
+  for (const r of rows) {
+    const usd = precioFila(r);
+    if (!Number.isFinite(usd)) {
+      sinPrecio++;
+      continue;
+    }
+
+    const ars = precioArsDesdeGrilla(usd, grilla);
+    if (!Number.isFinite(ars)) {
+      sinConversion++;
+      continue;
+    }
+
+    salida.push(`${String(r.nombre || '').trim()} | ${String(r.plataformas || '').trim()} | ${formatArs(ars)}`);
+  }
+
+  $('listaPublicacion').value = salida.join('\n');
+  $('btnCopiarLista').disabled = salida.length === 0;
+
+  const maximo = grilla[grilla.length - 1];
+  $('estadoGrilla').textContent =
+    `${grilla.length} escalones cargados. Máximo: US$${maximo.usd} → ${formatArs(maximo.ars)}.\n` +
+    `${salida.length} productos listos para copiar` +
+    `${sinPrecio ? ` | ${sinPrecio} sin precio` : ''}` +
+    `${sinConversion ? ` | ${sinConversion} sin conversión` : ''}.`;
+}
+
+async function copiarListaPublicacion() {
+  const texto = $('listaPublicacion').value;
+  if (!texto) return;
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(texto);
+    } else {
+      $('listaPublicacion').focus();
+      $('listaPublicacion').select();
+      document.execCommand('copy');
+      window.getSelection()?.removeAllRanges();
+    }
+
+    $('estadoCopia').textContent = `✅ ${rows.length} productos copiados. Ya podés pegarlos donde quieras.`;
+  } catch (e) {
+    console.error('No se pudo copiar la lista:', e);
+    $('estadoCopia').textContent = '⚠️ No se pudo copiar automáticamente. Seleccioná el listado y copialo manualmente.';
+  }
+}
+
 function exportCommercialRows() {
   return rows.map(r => ({
     'Página': r.pagina,
@@ -939,6 +1161,9 @@ function descargarCsv() {
 $('btnExtraer').addEventListener('click', extraer);
 $('btnExcel').addEventListener('click', descargarExcel);
 $('btnCsv').addEventListener('click', descargarCsv);
+$('btnAplicarGrilla').addEventListener('click', actualizarListaPublicacion);
+$('btnCopiarLista').addEventListener('click', copiarListaPublicacion);
+$('grillaPrecios').addEventListener('input', actualizarListaPublicacion);
 
 $('btnDescartados').addEventListener('click', () => {
   const box = $('descartadosBox');
