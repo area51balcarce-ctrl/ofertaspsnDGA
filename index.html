@@ -1010,6 +1010,7 @@ function actualizarListaPublicacion() {
   const salida = [];
   let sinPrecio = 0;
   let sinConversion = 0;
+  let ps5ConAdicional = 0;
 
   if (!grilla.length) {
     $('listaPublicacion').value = '';
@@ -1019,11 +1020,18 @@ function actualizarListaPublicacion() {
   }
 
   for (const r of rows) {
-    const usd = precioFila(r);
-    if (!Number.isFinite(usd)) {
+    const usdBase = precioFila(r);
+    if (!Number.isFinite(usdBase)) {
       sinPrecio++;
       continue;
     }
+
+    // Regla DGA aprobada: solamente los juegos que son exclusivamente PS5
+    // suman US$5 al costo ANTES de buscar el escalón correspondiente.
+    // PS4 y PS4+PS5 conservan el precio PSN original.
+    const esSoloPS5 = plataformaComercial(r) === 'PS5';
+    const usd = esSoloPS5 ? usdBase + 5 : usdBase;
+    if (esSoloPS5) ps5ConAdicional++;
 
     const ars = precioArsDesdeGrilla(usd, grilla);
     if (!Number.isFinite(ars)) {
@@ -1041,6 +1049,7 @@ function actualizarListaPublicacion() {
   $('estadoGrilla').textContent =
     `${grilla.length} escalones cargados. Máximo: US$${maximo.usd} → ${formatArs(maximo.ars)}.\n` +
     `${salida.length} productos listos para copiar` +
+    `${ps5ConAdicional ? ` | ${ps5ConAdicional} PS5 con +US$5` : ''}` +
     `${sinPrecio ? ` | ${sinPrecio} sin precio` : ''}` +
     `${sinConversion ? ` | ${sinConversion} sin conversión` : ''}.`;
 }
