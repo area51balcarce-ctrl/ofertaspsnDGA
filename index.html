@@ -234,6 +234,184 @@ function setStatus(txt, clase='') {
   $('estado').textContent = txt;
 }
 
+// -----------------------------------------------------------------------------
+// DEPURACIÓN FINAL DE EDICIONES / PLATAFORMAS
+// LEY DEL PROYECTO: esta capa se aplica DESPUÉS de leer todas las páginas.
+// No modifica la consulta PSN, pageInfo, paginación ni filtros existentes.
+// -----------------------------------------------------------------------------
+
+function parsePrecioComparable(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return Number.POSITIVE_INFINITY;
+
+  let limpio = raw.replace(/[^0-9.,-]/g, '');
+  if (!limpio) return Number.POSITIVE_INFINITY;
+
+  const ultimaComa = limpio.lastIndexOf(',');
+  const ultimoPunto = limpio.lastIndexOf('.');
+
+  if (ultimaComa !== -1 && ultimoPunto !== -1) {
+    if (ultimaComa > ultimoPunto) {
+      limpio = limpio.replace(/\./g, '').replace(',', '.');
+    } else {
+      limpio = limpio.replace(/,/g, '');
+    }
+  } else if (ultimaComa !== -1) {
+    const decimales = limpio.length - ultimaComa - 1;
+    limpio = decimales === 2
+      ? limpio.replace(/\./g, '').replace(',', '.')
+      : limpio.replace(/,/g, '');
+  } else if (ultimoPunto !== -1) {
+    const decimales = limpio.length - ultimoPunto - 1;
+    if (decimales !== 2) limpio = limpio.replace(/\./g, '');
+  }
+
+  const numero = Number.parseFloat(limpio);
+  return Number.isFinite(numero) ? numero : Number.POSITIVE_INFINITY;
+}
+
+function plataformaComercial(row) {
+  const p = normalizeText(row?.plataformas || '')
+    .replace(/playstation\s*/g, 'ps');
+
+  const tienePS4 = /(^|\b)ps\s*4(\b|$)/.test(p);
+  const tienePS5 = /(^|\b)ps\s*5(\b|$)/.test(p);
+
+  if (tienePS4 && tienePS5) return 'PS4+PS5';
+  if (tienePS4) return 'PS4';
+  if (tienePS5) return 'PS5';
+
+  return String(row?.plataformas || '').trim() || 'OTRA';
+}
+
+function nombreBaseEdicion(nombre) {
+  let n = normalizeText(nombre)
+    .replace(/[®™©]/g, '')
+    .replace(/\bplaystation\s*4\b/g, ' ')
+    .replace(/\bplaystation\s*5\b/g, ' ')
+    .replace(/\bps\s*4\b/g, ' ')
+    .replace(/\bps\s*5\b/g, ' ');
+
+  const patronesEdicion = [
+    /\bdigital\s+deluxe\s+edition\b/g,
+    /\bultimate\s+edition\b/g,
+    /\bpremium\s+edition\b/g,
+    /\bdeluxe\s+edition\b/g,
+    /\bstandard\s+edition\b/g,
+    /\bedicion\s+ultimate\b/g,
+    /\bedicion\s+premium\b/g,
+    /\bedicion\s+deluxe\b/g,
+    /\bedicion\s+estandar\b/g,
+    /\bedicion\s+standard\b/g,
+    /\bultimate\b/g,
+    /\bpremium\b/g,
+    /\bdeluxe\b/g,
+    /\bstandard\b/g,
+    /\bestandar\b/g
+  ];
+
+  for (const patron of patronesEdicion) n = n.replace(patron, ' ');
+
+  return n
+    .replace(/[\[\]{}()|:;,_+\-–—]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function precioFila(row) {
+  return parsePrecioComparable(row?.precioPromo || row?.precioOriginal || '');
+}
+
+function elegirMasBarata(actual, candidata) {
+  if (!actual) return candidata;
+
+  const precioActual = precioFila(actual);
+  const precioCandidata = precioFila(candidata);
+
+  if (precioCandidata < precioActual) return candidata;
+  if (precioCandidata > precioActual) return actual;
+  return actual;
+}
+
+function depurarEdicionesYPlataformas(lista) {
+  // 1) Misma obra + misma plataforma: queda la edición más barata.
+  const porJuegoYPlataforma = new Map();
+
+  for (const row of lista) {
+    const base = nombreBaseEdicion(row.nombre);
+    const plataforma = plataformaComercial(row);
+    const juegoKey = base || `__product__${row.productId || row.nombre}`;
+    const key = `${juegoKey}|||${normalizeText(plataforma)}`;
+
+    porJuegoYPlataforma.set(
+      key,
+      elegirMasBarata(porJuegoYPlataforma.get(key), row)
+    );
+  }
+
+  // 2) Comparación especial PS4 / PS5 / PS4+PS5.
+  const grupos = new Map();
+
+  for (const row of porJuegoYPlataforma.values()) {
+    const base = nombreBaseEdicion(row.nombre) || `__product__${row.productId || row.nombre}`;
+    if (!grupos.has(base)) grupos.set(base, []);
+    grupos.get(base).push(row);
+  }
+
+  const resultado = [];
+
+  for (const grupo of grupos.values()) {
+    const ps4 = grupo.find(r => plataformaComercial(r) === 'PS4');
+    const ps5 = grupo.find(r => plataformaComercial(r) === 'PS5');
+    const combo = grupo.find(r => plataformaComercial(r) === 'PS4+PS5');
+    const otros = grupo.filter(r => !['PS4', 'PS5', 'PS4+PS5'].includes(plataformaComercial(r)));
+
+    if (combo) {
+      const precioCombo = precioFila(combo);
+
+      // La combinada reemplaza cada individual solamente si es igual o más barata.
+      if (ps4 && precioFila(ps4) < precioCombo) resultado.push(ps4);
+      if (ps5 && precioFila(ps5) < precioCombo) resultado.push(ps5);
+      resultado.push(combo);
+    } else {
+      if (ps4) resultado.push(ps4);
+      if (ps5) resultado.push(ps5);
+    }
+
+    resultado.push(...otros);
+  }
+
+  const indiceOriginal = new Map();
+  lista.forEach((r, i) => {
+    const key = r.productId || `${r.nombre}|||${r.plataformas}|||${i}`;
+    if (!indiceOriginal.has(key)) indiceOriginal.set(key, i);
+  });
+
+  return resultado.sort((a, b) => {
+    const ka = a.productId || '';
+    const kb = b.productId || '';
+    return (indiceOriginal.get(ka) ?? 0) - (indiceOriginal.get(kb) ?? 0);
+  });
+}
+
+function aplicarDepuracionFinal() {
+  if (!rows.length) return { antes: 0, despues: 0, eliminados: 0 };
+
+  const antes = rows.length;
+  const depuradas = depurarEdicionesYPlataformas(rows);
+
+  rows.length = 0;
+  rows.push(...depuradas);
+  renderCommercialRows();
+  updateStats();
+
+  return {
+    antes,
+    despues: rows.length,
+    eliminados: Math.max(0, antes - rows.length)
+  };
+}
+
 function contarPromo() {
   return rows.filter(r =>
     r.descuento ||
@@ -630,6 +808,9 @@ async function extraer() {
     if (delay) await sleep(delay);
   }
 
+  // Se depura una sola vez al final, con todas las páginas ya cargadas.
+  const depuracion = aplicarDepuracionFinal();
+
   $('btnExtraer').disabled = false;
   $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
   $('btnCsv').disabled = rows.length === 0;
@@ -643,7 +824,8 @@ async function extraer() {
       `Fuente: ${storeUrl || 'categoría PSN predeterminada'}.\n` +
       `${totalProductosDetectados !== null ? `${totalProductosDetectados} productos detectados por PlayStation.\n` : ''}` +
       `${leidosPSN} productos leídos desde PSN.\n` +
-      `${rows.length} productos comerciales.\n` +
+      `${rows.length} productos comerciales después de depurar ediciones/plataformas.\n` +
+      `${depuracion.eliminados} variantes redundantes eliminadas por precio/plataforma.\n` +
       `${descartados.length} productos descartados.\n` +
       `${eliminadosPorMi.length} productos en ELIMINADOS POR MÍ.\n` +
       `Final automático: página ${totalPaginasDetectadas || page}.\n` +
