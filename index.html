@@ -68,6 +68,15 @@
       line-height:1;
     }
     .danger-mini:hover { background:#551520; }
+    .bulk-checkbox {
+      width:18px;
+      height:18px;
+      padding:0;
+      margin:0;
+      cursor:pointer;
+      accent-color:#ff5c6c;
+      vertical-align:middle;
+    }
     .restore-mini {
       padding:7px 11px;
       border-radius:8px;
@@ -178,6 +187,7 @@
     <button class="secondary" id="btnCsv" disabled>📄 Descargar CSV</button>
     <button class="secondary" id="btnDescartados" disabled>🧹 Ver descartados</button>
     <button class="secondary" id="btnEliminados" disabled>🚫 Ver eliminados por mí</button>
+    <button class="secondary" id="btnEliminarSeleccionados" disabled>🗑️ Eliminar seleccionados (0)</button>
     <button class="secondary" id="btnLimpiar">🧽 Limpiar</button>
   </div>
 
@@ -202,7 +212,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Página</th><th>❌</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
+        <th>Página</th><th>Sel.</th><th>❌</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
         <th>Precio original</th><th>Precio promo</th><th>Descuento</th><th>URL directa</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
@@ -320,6 +330,7 @@ let cancelado = false;
 let leidosPSN = 0;
 let paginasProcesadas = 0;
 let eliminadosSet = new Set();
+const seleccionadosLote = new Set();
 
 const motivos = {
   TIPO_EXCLUIDO: 0,
@@ -552,11 +563,29 @@ function escapeHtml(value) {
   })[c]);
 }
 
+function rowSelectionKey(r) {
+  return [
+    String(r?.productId || '').trim(),
+    String(r?.pagina || '').trim(),
+    normalizeText(r?.nombre || ''),
+    normalizeText(r?.plataformas || '')
+  ].join('|');
+}
+
+function actualizarBotonEliminarSeleccionados() {
+  const cantidad = seleccionadosLote.size;
+  $('btnEliminarSeleccionados').disabled = cantidad === 0;
+  $('btnEliminarSeleccionados').textContent = `🗑️ Eliminar seleccionados (${cantidad})`;
+}
+
 function appendRow(r) {
   const tr = document.createElement('tr');
 
+  const selectionKey = rowSelectionKey(r);
+
   tr.innerHTML = `
     <td>${escapeHtml(r.pagina)}</td>
+    <td><input class="bulk-checkbox" type="checkbox" title="Seleccionar para eliminación múltiple" ${seleccionadosLote.has(selectionKey) ? 'checked' : ''}></td>
     <td><button class="danger-mini" type="button" title="Eliminar de mi catálogo">✖</button></td>
     <td>${escapeHtml(r.nombre)}</td>
     <td>${escapeHtml(r.plataformas)}</td>
@@ -565,6 +594,15 @@ function appendRow(r) {
     <td>${escapeHtml(r.precioPromo)}</td>
     <td>${escapeHtml(r.descuento)}</td>
     <td>${r.urlDirecta ? `<a href="${escapeHtml(r.urlDirecta)}" target="_blank" rel="noopener noreferrer">Abrir PSN</a>` : ''}</td>`;
+
+  tr.querySelector('.bulk-checkbox').addEventListener('change', (event) => {
+    if (event.target.checked) {
+      seleccionadosLote.add(selectionKey);
+    } else {
+      seleccionadosLote.delete(selectionKey);
+    }
+    actualizarBotonEliminarSeleccionados();
+  });
 
   tr.querySelector('.danger-mini').addEventListener('click', () => eliminarPorMi(r));
   $('tbody').appendChild(tr);
@@ -646,6 +684,102 @@ async function cargarEliminados({silencioso = false} = {}) {
   }
 }
 
+async function eliminarSeleccionados() {
+  if (seleccionadosLote.size === 0) return;
+
+  const seleccionados = rows.filter(r => seleccionadosLote.has(rowSelectionKey(r)));
+  if (!seleccionados.length) {
+    seleccionadosLote.clear();
+    actualizarBotonEliminarSeleccionados();
+    return;
+  }
+
+  // La exclusión persistente actual funciona por nombre normalizado.
+  // Si hay dos filas del mismo título (por ejemplo PS4 y PS5), se guarda una sola vez
+  // y se combinan sus plataformas.
+  const porNombre = new Map();
+
+  for (const r of seleccionados) {
+    const nombre = String(r.nombre || '').trim();
+    const nombreNormalizado = normalizeText(nombre);
+    if (!nombreNormalizado) continue;
+
+    const plataformas = String(r.plataformas || '')
+      .split(',')
+      .map(x => x.trim())
+      .filter(Boolean);
+
+    if (!porNombre.has(nombreNormalizado)) {
+      porNombre.set(nombreNormalizado, {
+        nombre,
+        productId: r.productId || '',
+        plataformas: []
+      });
+    }
+
+    const item = porNombre.get(nombreNormalizado);
+    item.plataformas = [...new Set([...item.plataformas, ...plataformas])];
+    if (!item.productId && r.productId) item.productId = r.productId;
+  }
+
+  const items = [...porNombre.values()];
+  if (!items.length) return;
+
+  const confirmar = confirm(
+    `¿Eliminar ${items.length} juego${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'} de tu catálogo?\n\n` +
+    `Quedarán guardados en ELIMINADOS POR MÍ y no aparecerán en futuros análisis.`
+  );
+
+  if (!confirmar) return;
+
+  const boton = $('btnEliminarSeleccionados');
+  boton.disabled = true;
+  boton.textContent = `🗑️ Eliminando ${items.length}...`;
+
+  try {
+    const res = await fetch('/api/eliminados-api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || !data.ok) {
+      throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+    }
+
+    await cargarEliminados({silencioso: true});
+
+    const nombresEliminados = new Set(items.map(item => normalizeText(item.nombre)));
+
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (nombresEliminados.has(normalizeText(rows[i].nombre))) {
+        rows.splice(i, 1);
+      }
+    }
+
+    seleccionadosLote.clear();
+    renderCommercialRows();
+    actualizarBotonEliminarSeleccionados();
+    updateStats();
+    actualizarListaPublicacion();
+
+    $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
+    $('btnCsv').disabled = rows.length === 0;
+
+    setStatus(
+      `${items.length} juego${items.length === 1 ? '' : 's'} agregado${items.length === 1 ? '' : 's'} a ELIMINADOS POR MÍ.\n` +
+      `Se guardaron en una sola actualización y no volverán a aparecer mientras permanezcan en esa lista.`,
+      'ok'
+    );
+  } catch (e) {
+    console.error('Error eliminando selección múltiple:', e);
+    setStatus(`No se pudieron eliminar los juegos seleccionados. ${e.message}`, 'warn');
+    actualizarBotonEliminarSeleccionados();
+  }
+}
+
 async function eliminarPorMi(r) {
   const nombre = String(r.nombre || '').trim();
   if (!nombre) return;
@@ -683,6 +817,12 @@ async function eliminarPorMi(r) {
 
     const nombreNormalizado = normalizeText(nombre);
 
+    for (const fila of rows) {
+      if (normalizeText(fila.nombre) === nombreNormalizado) {
+        seleccionadosLote.delete(rowSelectionKey(fila));
+      }
+    }
+
     for (let i = rows.length - 1; i >= 0; i--) {
       if (normalizeText(rows[i].nombre) === nombreNormalizado) {
         rows.splice(i, 1);
@@ -690,6 +830,7 @@ async function eliminarPorMi(r) {
     }
 
     renderCommercialRows();
+    actualizarBotonEliminarSeleccionados();
     updateStats();
     actualizarListaPublicacion();
 
@@ -795,6 +936,8 @@ function resetData() {
   cancelado = false;
   leidosPSN = 0;
   paginasProcesadas = 0;
+  seleccionadosLote.clear();
+  actualizarBotonEliminarSeleccionados();
 
   motivos.TIPO_EXCLUIDO = 0;
   motivos.CONTENIDO_EXTRA = 0;
@@ -1193,6 +1336,8 @@ $('btnDescartados').addEventListener('click', () => {
     ? '🧹 Ver descartados'
     : '👁️ Ocultar descartados';
 });
+
+$('btnEliminarSeleccionados').addEventListener('click', eliminarSeleccionados);
 
 $('btnEliminados').addEventListener('click', () => {
   const box = $('eliminadosBox');
