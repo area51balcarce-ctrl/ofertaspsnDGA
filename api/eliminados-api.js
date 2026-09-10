@@ -228,9 +228,128 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // POST: agregar eliminado
+    // POST: agregar eliminado (individual o lote)
     if (method === "POST") {
       const body = await parseRequestBody(req);
+
+      // NUEVO: eliminación múltiple en una sola escritura de eliminados.json.
+      // El POST individual de siempre se conserva debajo, sin cambios de contrato.
+      if (Array.isArray(body.items)) {
+        if (body.items.length === 0) {
+          return sendJson(res, 400, {
+            ok: false,
+            error: "ITEMS_REQUERIDOS",
+            mensaje: "Debés enviar al menos un juego en items."
+          });
+        }
+
+        if (body.items.length > 1000) {
+          return sendJson(res, 400, {
+            ok: false,
+            error: "LOTE_DEMASIADO_GRANDE",
+            mensaje: "El lote no puede superar los 1000 registros por operación."
+          });
+        }
+
+        const mapaNuevos = new Map();
+
+        for (const rawItem of body.items) {
+          const nombre = String(rawItem?.nombre || "").trim();
+          const nombreNormalizado = normalizeText(nombre);
+          if (!nombre || !nombreNormalizado) continue;
+
+          const productId = rawItem?.productId
+            ? String(rawItem.productId).trim()
+            : "";
+
+          const plataformas = Array.isArray(rawItem?.plataformas)
+            ? [...new Set(
+                rawItem.plataformas
+                  .map((x) => String(x).trim())
+                  .filter(Boolean)
+              )]
+            : [];
+
+          if (!mapaNuevos.has(nombreNormalizado)) {
+            mapaNuevos.set(nombreNormalizado, {
+              nombre,
+              nombreNormalizado,
+              productId,
+              plataformas,
+              fechaEliminacion: new Date().toISOString(),
+              origen: "manual"
+            });
+          } else {
+            const existente = mapaNuevos.get(nombreNormalizado);
+            existente.plataformas = [
+              ...new Set([...existente.plataformas, ...plataformas])
+            ];
+            if (!existente.productId && productId) existente.productId = productId;
+          }
+        }
+
+        const nuevos = [...mapaNuevos.values()];
+
+        if (nuevos.length === 0) {
+          return sendJson(res, 400, {
+            ok: false,
+            error: "ITEMS_INVALIDOS",
+            mensaje: "El lote no contiene juegos válidos."
+          });
+        }
+
+        const result = await updateWithRetry(
+          token,
+          (database) => {
+            const existentes = new Set(
+              database.eliminados.map((item) => item.nombreNormalizado)
+            );
+
+            const aAgregar = nuevos.filter(
+              (item) => !existentes.has(item.nombreNormalizado)
+            );
+
+            if (aAgregar.length === 0) {
+              return {
+                changed: false,
+                database,
+                extra: {
+                  agregados: [],
+                  yaExistian: nuevos.map((item) => item.nombre)
+                }
+              };
+            }
+
+            const updated = {
+              eliminados: [...database.eliminados, ...aAgregar].sort((a, b) =>
+                a.nombre.localeCompare(b.nombre, "es", { sensitivity: "base" })
+              )
+            };
+
+            return {
+              changed: true,
+              database: updated,
+              extra: {
+                agregados: aAgregar,
+                yaExistian: nuevos
+                  .filter((item) => existentes.has(item.nombreNormalizado))
+                  .map((item) => item.nombre)
+              }
+            };
+          },
+          `DGA PSN: eliminar lote de ${nuevos.length} juegos`
+        );
+
+        return sendJson(res, result.changed ? 201 : 200, {
+          ok: true,
+          lote: true,
+          agregados: result.extra.agregados.length,
+          yaExistian: result.extra.yaExistian.length,
+          cantidad: result.database.eliminados.length,
+          registros: result.extra.agregados,
+          eliminados: result.database.eliminados
+        });
+      }
 
       const nombre = String(body.nombre || "").trim();
       const nombreNormalizado = normalizeText(nombre);
