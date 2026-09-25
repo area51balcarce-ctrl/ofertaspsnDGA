@@ -718,11 +718,9 @@ async function eliminarSeleccionados() {
     return;
   }
 
-  // La exclusión persistente actual funciona por nombre normalizado.
-  // Si hay dos filas del mismo título (por ejemplo PS4 y PS5), se guarda una sola vez
-  // y se combinan sus plataformas.
+  // La exclusión persistente existente se identifica por nombre normalizado.
+  // Se combinan las plataformas de filas que correspondan al mismo juego.
   const porNombre = new Map();
-
   for (const r of seleccionados) {
     const nombre = String(r.nombre || '').trim();
     const nombreNormalizado = normalizeText(nombre);
@@ -753,54 +751,81 @@ async function eliminarSeleccionados() {
     `¿Eliminar ${items.length} juego${items.length === 1 ? '' : 's'} seleccionado${items.length === 1 ? '' : 's'} de tu catálogo?\n\n` +
     `Quedarán guardados en ELIMINADOS POR MÍ y no aparecerán en futuros análisis.`
   );
-
   if (!confirmar) return;
 
+  // La API existente admite como máximo 1.000 registros por solicitud.
+  // Enviar lotes secuenciales evita conflictos al actualizar eliminados.json.
+  const TAMANO_LOTE = 1000;
+  const totalLotes = Math.ceil(items.length / TAMANO_LOTE);
+  const nombresGuardados = new Set();
   const boton = $('btnEliminarSeleccionados');
   boton.disabled = true;
-  boton.textContent = `🗑️ Eliminando ${items.length}...`;
 
-  try {
-    const res = await fetch('/api/eliminados-api', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
-    });
+  let errorDeGuardado = null;
+  for (let indice = 0; indice < totalLotes; indice++) {
+    const lote = items.slice(indice * TAMANO_LOTE, (indice + 1) * TAMANO_LOTE);
+    boton.textContent = `🗑️ Guardando lote ${indice + 1} de ${totalLotes}...`;
 
-    const data = await res.json();
+    try {
+      const res = await fetch('/api/eliminados-api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: lote })
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+      }
+      for (const item of lote) nombresGuardados.add(normalizeText(item.nombre));
+    } catch (e) {
+      console.error(`Error al guardar el lote ${indice + 1}:`, e);
+      errorDeGuardado = `Falló el lote ${indice + 1} de ${totalLotes}: ${e.message}`;
+      break; // No continuar con otros lotes si falla una escritura.
+    }
+  }
 
-    if (!res.ok || !data.ok) {
-      throw new Error(data.mensaje || data.error || `HTTP ${res.status}`);
+  // Actualizar la pantalla solamente con los lotes cuya API confirmó el guardado.
+  // Si un lote falló, los juegos restantes conservan sus casillas seleccionadas.
+  if (nombresGuardados.size > 0) {
+    try {
+      const listaActualizada = await cargarEliminados({silencioso: true});
+      if (!listaActualizada) {
+        errorDeGuardado = (errorDeGuardado ? errorDeGuardado + ' ' : '') +
+          'Los lotes confirmados se guardaron, pero no se pudo recargar ELIMINADOS POR MÍ.';
+      }
+    } catch (e) {
+      errorDeGuardado = (errorDeGuardado ? errorDeGuardado + ' ' : '') +
+        `No se pudo recargar ELIMINADOS POR MÍ: ${e.message}`;
     }
 
-    await cargarEliminados({silencioso: true});
-
-    const nombresEliminados = new Set(items.map(item => normalizeText(item.nombre)));
-
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (nombresEliminados.has(normalizeText(rows[i].nombre))) {
+      if (nombresGuardados.has(normalizeText(rows[i].nombre))) {
+        seleccionadosLote.delete(rowSelectionKey(rows[i]));
         rows.splice(i, 1);
       }
     }
-
-    seleccionadosLote.clear();
     renderCommercialRows();
-    actualizarBotonEliminarSeleccionados();
     updateStats();
     actualizarListaPublicacion();
-
     $('btnExcel').disabled = rows.length === 0 && descartados.length === 0 && eliminadosPorMi.length === 0;
     $('btnCsv').disabled = rows.length === 0;
+  }
 
+  actualizarBotonEliminarSeleccionados();
+  if (errorDeGuardado) {
     setStatus(
-      `${items.length} juego${items.length === 1 ? '' : 's'} agregado${items.length === 1 ? '' : 's'} a ELIMINADOS POR MÍ.\n` +
-      `Se guardaron en una sola actualización y no volverán a aparecer mientras permanezcan en esa lista.`,
+      `${nombresGuardados.size} de ${items.length} juegos confirmados en ELIMINADOS POR MÍ. ` +
+      `${items.length - nombresGuardados.size} pendientes. ${errorDeGuardado} ` +
+      `Podés reintentar con los juegos que siguen seleccionados.`,
+      'warn'
+    );
+  } else {
+    setStatus(
+      `${items.length} juego${items.length === 1 ? '' : 's'} agregado${items.length === 1 ? '' : 's'} a ELIMINADOS POR MÍ ` +
+      `en ${totalLotes} lote${totalLotes === 1 ? '' : 's'}. ` +
+      `No volverán a aparecer mientras permanezcan en esa lista.`,
       'ok'
     );
-  } catch (e) {
-    console.error('Error eliminando selección múltiple:', e);
-    setStatus(`No se pudieron eliminar los juegos seleccionados. ${e.message}`, 'warn');
-    actualizarBotonEliminarSeleccionados();
   }
 }
 
