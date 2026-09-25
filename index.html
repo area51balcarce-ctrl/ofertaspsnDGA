@@ -212,7 +212,7 @@
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Página</th><th>Sel.</th><th>❌</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
+        <th>Página</th><th>Sel.<br><input id="seleccionarTodos" class="bulk-checkbox" type="checkbox" title="Seleccionar o desmarcar todos los productos visibles" aria-label="Seleccionar o desmarcar todos"></th><th>❌</th><th>Nombre</th><th>Plataformas</th><th>Tipo</th>
         <th>Precio original</th><th>Precio promo</th><th>Descuento</th><th>URL directa</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
@@ -576,6 +576,28 @@ function actualizarBotonEliminarSeleccionados() {
   const cantidad = seleccionadosLote.size;
   $('btnEliminarSeleccionados').disabled = cantidad === 0;
   $('btnEliminarSeleccionados').textContent = `🗑️ Eliminar seleccionados (${cantidad})`;
+  actualizarSeleccionarTodos();
+}
+
+function actualizarSeleccionarTodos() {
+  const control = $('seleccionarTodos');
+  const total = rows.length;
+  const seleccionadosVisibles = rows.filter(r => seleccionadosLote.has(rowSelectionKey(r))).length;
+  control.disabled = total === 0;
+  control.checked = total > 0 && seleccionadosVisibles === total;
+  control.indeterminate = seleccionadosVisibles > 0 && seleccionadosVisibles < total;
+}
+
+function seleccionarTodosLosVisibles(marcar) {
+  rows.forEach(r => {
+    const clave = rowSelectionKey(r);
+    if (marcar) seleccionadosLote.add(clave);
+    else seleccionadosLote.delete(clave);
+  });
+  $('tbody').querySelectorAll('.bulk-checkbox').forEach(casilla => {
+    casilla.checked = marcar;
+  });
+  actualizarBotonEliminarSeleccionados();
 }
 
 function appendRow(r) {
@@ -606,11 +628,13 @@ function appendRow(r) {
 
   tr.querySelector('.danger-mini').addEventListener('click', () => eliminarPorMi(r));
   $('tbody').appendChild(tr);
+  actualizarSeleccionarTodos();
 }
 
 function renderCommercialRows() {
   $('tbody').innerHTML = '';
   rows.forEach(appendRow);
+  actualizarSeleccionarTodos();
 }
 
 function appendDiscardedRow(r) {
@@ -1337,6 +1361,7 @@ $('btnDescartados').addEventListener('click', () => {
     : '👁️ Ocultar descartados';
 });
 
+$('seleccionarTodos').addEventListener('change', (event) => seleccionarTodosLosVisibles(event.target.checked));
 $('btnEliminarSeleccionados').addEventListener('click', eliminarSeleccionados);
 
 $('btnEliminados').addEventListener('click', () => {
