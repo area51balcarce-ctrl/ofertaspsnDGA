@@ -88,38 +88,106 @@ function sanitizeDatabase(raw) {
   };
 }
 
-async function readGithubDatabase(token) {
-  const response = await fetch(
-    `${GITHUB_API_URL}?ref=${encodeURIComponent(GITHUB_BRANCH)}`,
-    {
-      method: "GET",
-      headers: githubHeaders(token),
-      cache: "no-store"
+// GitHub Contents omite "content" en archivos grandes (> 1 MB), aunque entrega "sha".
+// En ese caso recuperamos el contenido por Git Blobs sin modificar el archivo.
+const GITHUB_BLOB_API_URL =
+  `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/git/blobs/`;
+
+const RETRYABLE_GITHUB_GET_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function githubGetJson(url, token) {
+  const MAX_READ_ATTEMPTS = 3;
+  let lastError;
+
+  for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: githubHeaders(token),
+        cache: "no-store"
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (response.ok) return data;
+
+      const error = new Error(
+        data?.message || `GitHub respondió HTTP ${response.status}`
+      );
+      error.status = response.status;
+      lastError = error;
+
+      // No reintentar permisos inválidos, 404 ni restricciones de acceso.
+      if (!RETRYABLE_GITHUB_GET_STATUSES.has(response.status) ||
+          attempt === MAX_READ_ATTEMPTS) {
+        throw error;
+      }
+    } catch (error) {
+      lastError = error;
+      if (error?.status && !RETRYABLE_GITHUB_GET_STATUSES.has(error.status)) {
+        throw error;
+      }
+      if (attempt === MAX_READ_ATTEMPTS) throw error;
     }
+
+    await wait(350 * attempt);
+  }
+
+  throw lastError;
+}
+
+async function readGithubDatabase(token) {
+  const data = await githubGetJson(
+    `${GITHUB_API_URL}?ref=${encodeURIComponent(GITHUB_BRANCH)}`,
+    token
   );
 
-  const data = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const error = new Error(
-      data?.message || `GitHub respondió HTTP ${response.status}`
-    );
-    error.status = response.status;
+  if (!data?.sha) {
+    const error = new Error("GitHub no devolvió el SHA de eliminados.json");
+    error.status = 502;
     throw error;
   }
 
-  if (!data?.content || !data?.sha) {
-    const error = new Error("GitHub no devolvió content/sha de eliminados.json");
+  let base64 = data.content;
+
+  // Para archivos de más de 1 MB, Contents API responde content vacío y
+  // encoding "none". Git Blobs permite leer el archivo completo por SHA.
+  if (!base64 || data.encoding === "none") {
+    const blob = await githubGetJson(
+      `${GITHUB_BLOB_API_URL}${encodeURIComponent(data.sha)}`,
+      token
+    );
+
+    if (!blob?.content || blob.encoding !== "base64" || blob.sha !== data.sha) {
+      const error = new Error(
+        "GitHub no devolvió el contenido completo de eliminados.json"
+      );
+      error.status = 502;
+      throw error;
+    }
+    base64 = blob.content;
+  } else if (data.encoding !== "base64") {
+    const error = new Error("Codificación inesperada de eliminados.json");
     error.status = 502;
     throw error;
   }
 
   let parsed;
-
   try {
-    parsed = JSON.parse(decodeBase64Utf8(data.content));
+    parsed = JSON.parse(decodeBase64Utf8(base64));
   } catch {
     const error = new Error("eliminados.json existe pero no contiene JSON válido");
+    error.status = 500;
+    throw error;
+  }
+
+  // No convertir un archivo con formato incorrecto en una lista vacía:
+  // una escritura posterior podría borrar los eliminados anteriores.
+  if (!parsed || !Array.isArray(parsed.eliminados)) {
+    const error = new Error("eliminados.json no contiene una lista eliminados válida");
     error.status = 500;
     throw error;
   }
